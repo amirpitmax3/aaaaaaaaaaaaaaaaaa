@@ -3,12 +3,13 @@
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from flask import Flask # <--- جدید: برای باز کردن پورت HTTP
-import threading # <--- جدید: برای اجرای موازی
+from flask import Flask 
+import threading 
 import time
 import os
 import random
 import asyncio
+from urllib.parse import urlparse
 
 # --- تنظیمات شما (به درخواست شما به صورت مستقیم در کد قرار داده شد) ---
 
@@ -54,7 +55,35 @@ def get_random_avatar_path(avatar_folder):
     except Exception:
         return None
 
-async def run_session_command(session_string, command, channel_username, avatar_folder=None):
+def parse_post_link(link):
+    """لینک پست را تجزیه کرده و شناسه چت و شناسه پیام را برمی گرداند."""
+    try:
+        parsed_url = urlparse(link)
+        path_parts = [p for p in parsed_url.path.split('/') if p]
+        
+        if len(path_parts) >= 2 and path_parts[0] == 'c':
+            # لینک به شکل https://t.me/c/ChannelID/MessageID
+            chat_id = int("-100" + path_parts[1])
+            message_id = int(path_parts[2])
+            return chat_id, message_id
+        
+        elif len(path_parts) >= 1:
+            # لینک به شکل https://t.me/ChannelUsername/MessageID
+            # یا اگر t.me/ تنها باشد، این قسمت کار نمی کند و باید لینک کامل باشد.
+            if len(path_parts) == 1:
+                # ممکن است یک یوزرنیم کانال باشد، اما MessageID لازم است.
+                return None, None
+            
+            chat_id = "@" + path_parts[0]
+            message_id = int(path_parts[1])
+            return chat_id, message_id
+            
+        return None, None
+    except Exception:
+        return None, None
+
+
+async def run_session_command(session_string, command, channel_username, avatar_folder=None, message_id=None):
     """یک عملیات مشخص را روی یک سشن فیک اجرا می کند."""
     
     # Pyrogram برای نام سشن به یک نام یونیک نیاز دارد، از یک UUID استفاده می کنیم.
@@ -112,6 +141,29 @@ async def run_session_command(session_string, command, channel_username, avatar_
             )
 
             result = f"🖼️ [تنظیم پروفایل] {session_name} با عکس رندوم و نام جدید به‌روزرسانی شد."
+
+        elif command == 'add_view':
+            if not message_id:
+                await app_client.stop()
+                return f"❌ [خطا] {session_name}: شناسه پیام برای بازدید لازم است."
+            
+            # 1. مطمئن می شویم سشن در کانال عضو است
+            try:
+                # اگر سشن عضو نباشد، join_chat سعی می کند عضو شود.
+                await app_client.join_chat(channel_username) 
+            except Exception:
+                await app_client.stop()
+                return f"⚠️ [خطا] {session_name}: نتوانست عضو کانال شود. بازدید انجام نشد."
+
+            # 2. بازدید از پست (فراخوانی get_messages یا read_history بازدید را ثبت می کند)
+            # Pyrogram با خواندن پیام ها به صورت خودکار بازدید را ثبت می کند.
+            await app_client.get_messages(
+                chat_id=channel_username, 
+                message_ids=message_id, 
+                replies=0
+            )
+
+            result = f"👁️ [بازدید موفق] {session_name} پست {message_id} را در {channel_username} بازدید کرد."
         
         else:
             result = f"❓ [عملیات نامشخص] {session_name} عملیات انجام نشد."
@@ -242,11 +294,11 @@ async def callback_handler(client, callback_query):
     # --- شبیه ساز بازدید/ری‌اکشن ---
     elif data == "simulate_views":
         await callback_query.message.edit_text(
-            "⚠️ **شبیه‌ساز بازدید/ری‌اکشن فعال شد.**\n\n"
-            "برای افزودن بازدید یا ری‌اکشن، باید دستور را مستقیماً ارسال کنید. (فعلا فقط شبیه سازی بازدید ساده فعال است)\n"
-            "دستور بازدید: `/boost <تعداد> <لینک_پست>`\n"
-            "مثال: `/boost 10000 https://t.me/c/12345/67`\n\n"
-            "**توجه:** این بخش نیاز به پیاده‌سازی پیچیده‌تر با استفاده از متدهای API تلگرام برای ری‌اکشن و بازدید واقعی دارد.",
+            "⚠️ **مدیریت بازدید/ری‌اکشن:**\n\n"
+            "برای افزودن بازدید واقعی به پست، دستور زیر را ارسال کنید:\n"
+            "دستور بازدید: `/boost <تعداد_بازدید> <لینک_پست>`\n"
+            "مثال: `/boost 100 https://t.me/ChannelUsername/1234`\n\n"
+            "**توجه:** ری‌اکشن هنوز پیاده‌سازی نشده است.",
             reply_markup=main_menu()
         )
         
@@ -258,27 +310,62 @@ async def callback_handler(client, callback_query):
             reply_markup=main_menu()
         )
         
-# --- هندلر دستور /boost (شبیه ساز) ---
+# --- هندلر دستور /boost (بازدید واقعی) ---
 @bot_app.on_message(filters.command("boost") & filters.user(ADMIN_ID))
 async def boost_command(client, message):
+    session_strings = get_session_strings(SESSION_RAW_FILE)
+    if not session_strings:
+        return await message.reply_text(f"❌ هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` یافت نشد.", reply_markup=main_menu())
+        
     try:
         command_parts = message.text.split()
         if len(command_parts) != 3:
-            return await message.reply_text("فرمت صحیح: `/boost <تعداد> <لینک_پست>`")
+            return await message.reply_text("فرمت صحیح: `/boost <تعداد> <لینک_پست>`", reply_markup=main_menu())
         
         count = int(command_parts[1])
         post_link = command_parts[2]
         
+        if count <= 0:
+            return await message.reply_text("تعداد بازدید باید یک عدد مثبت باشد.", reply_markup=main_menu())
+
+        # تجزیه لینک
+        channel_id, message_id = parse_post_link(post_link)
+        
+        if not channel_id or not message_id:
+            return await message.reply_text(
+                "❌ **خطا در لینک:** لطفاً لینک پست را با فرمت صحیح (مانند `https://t.me/ChannelUsername/123` یا `https://t.me/c/ChannelID/123`) وارد کنید.", 
+                reply_markup=main_menu()
+            )
+            
+        # محدود کردن تعداد سشن‌ها به تعداد درخواستی
+        sessions_to_use = session_strings[:min(count, len(session_strings))]
+        
         await message.reply_text(
-            f"🚀 **شبیه‌سازی بازدید/ری‌اکشن آغاز شد:**\n\n"
-            f"تعداد: {count} \n"
-            f"لینک پست: `{post_link}`\n\n"
-            f"این شبیه‌سازی در حال حاضر یک فرآیند نمایشی است و نیاز به پیاده‌سازی کامل متدهای API تلگرام برای ری‌اکشن و بازدید واقعی دارد.",
+            f"🚀 **شروع عملیات بازدید واقعی:**\n\n"
+            f"تعداد سشن‌های مورد استفاده: **{len(sessions_to_use)}** (حداکثر {count} بازدید درخواست شده)\n"
+            f"هدف: **{channel_id}/{message_id}**\n\n"
+            f"**لطفا صبر کنید...** این عملیات ممکن است کمی زمان ببرد.",
+            reply_markup=None
+        )
+        
+        # اجرای موازی عملیات بازدید
+        tasks = [
+            run_session_command(s, 'add_view', channel_id, message_id=message_id) 
+            for s in sessions_to_use
+        ]
+        
+        results = await asyncio.gather(*tasks)
+        
+        success_count = sum(1 for r in results if r.startswith("👁️"))
+        
+        await message.reply_text(
+            f"✅ **عملیات بازدید به پایان رسید:**\n"
+            f"بازدیدهای موفق: **{success_count}** از {len(sessions_to_use)} سشن.", 
             reply_markup=main_menu()
         )
 
     except ValueError:
-        await message.reply_text("لطفاً یک عدد صحیح برای تعداد وارد کنید.")
+        await message.reply_text("لطفاً یک عدد صحیح برای تعداد وارد کنید.", reply_markup=main_menu())
     except Exception as e:
         await message.reply_text(f"خطا در اجرای دستور: {e}", reply_markup=main_menu())
 
