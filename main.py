@@ -1,9 +1,10 @@
 # این ربات تلگرامی به عنوان پنل دکمه ای برای مدیریت عملیات های ممبر فیک، بازدید و پروفایل عمل می کند.
-# توجه: تمام سشن استرینگ های فیک از فایل 'aaaaaaaaaa_sessions_raw.txt' خوانده می شود.
-# هشدار: مقادیر API_ID, API_HASH, ADMIN_ID و BOT_TOKEN به صورت مستقیم در این کد تعریف شده‌اند.
+# توجه: برای حل مشکل Render 'No open ports detected'، یک سرور Flask ساده در یک Thread جداگانه اجرا می شود.
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask # <--- جدید: برای باز کردن پورت HTTP
+import threading # <--- جدید: برای اجرای موازی
 import time
 import os
 import random
@@ -57,8 +58,6 @@ async def run_session_command(session_string, command, channel_username, avatar_
     """یک عملیات مشخص را روی یک سشن فیک اجرا می کند."""
     
     # Pyrogram برای نام سشن به یک نام یونیک نیاز دارد، از یک UUID استفاده می کنیم.
-    # به خاطر اینکه سشن استرینگ در Pyrogram خود شامل اطلاعات احراز هویت است، ما فقط باید آن را وارد کنیم.
-    # نام سشن می تواند هر چیزی باشد.
     session_name = "Session_" + str(random.randint(10000, 99999)) 
     
     # 2. تعریف کلاینت با استفاده از Session String
@@ -304,9 +303,43 @@ async def setchannel_command(client, message):
         )
     except Exception as e:
         await message.reply_text(f"خطا در تنظیم کانال: {e}", reply_markup=main_menu())
+        
+# --------------------------------------------------------------------------------
+# --- سرور Flask برای چک کردن سلامت Render (Health Check) ---
+# --------------------------------------------------------------------------------
 
+# تعریف اپلیکیشن Flask
+web_app = Flask(__name__)
 
+# تعریف مسیر برای چک کردن سلامت
+@web_app.route('/')
+def health_check():
+    # پاسخ ساده HTTP 200 برای تأیید فعال بودن سرویس
+    return 'Telegram Bot is Running and Healthy', 200
+
+# تابع برای اجرای سرور Flask در یک رشته جداگانه
+def run_flask_server():
+    # پورت مورد نیاز را از متغیر محیطی Render می خواند (به طور پیش‌فرض 5000)
+    port = int(os.environ.get("PORT", 5000))
+    print(f"✅ Starting Flask Web Server on port {port} for Render Health Check...")
+    # هاست 0.0.0.0 ضروری است تا در محیط کانتینر Render به درستی اجرا شود
+    web_app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+
+# --------------------------------------------------------------------------------
+# --- اجرای اصلی ---
+# --------------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("ربات مدیریت در حال اجرا است. برای استفاده، به ربات خود در تلگرام پیام /start را ارسال کنید.")
+    # 1. سرور Flask را در یک رشته جداگانه شروع کنید
+    flask_thread = threading.Thread(target=run_flask_server)
+    # daemon=True اجازه می دهد که برنامه اصلی حتی اگر این رشته در حال اجراست، بسته شود
+    flask_thread.daemon = True 
+    flask_thread.start()
+    
+    # 2. ربات Pyrogram را در رشته اصلی اجرا کنید (bot_app.run() مسدود کننده است)
+    print("🤖 Starting Pyrogram Bot in main thread...")
     print(f"API ID: {API_ID}, ADMIN ID: {ADMIN_ID}")
-    bot_app.run()
+    
+    try:
+        bot_app.run() 
+    except Exception as e:
+        print(f"🛑 Error running Pyrogram bot: {e}")
