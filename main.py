@@ -3,6 +3,8 @@
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+# وارد کردن خطای خاص برای مدیریت MessageNotModified
+from pyrogram.errors import MessageNotModified 
 from flask import Flask 
 import threading 
 import time
@@ -63,17 +65,13 @@ def parse_post_link(link):
         
         if len(path_parts) >= 2 and path_parts[0] == 'c':
             # لینک به شکل https://t.me/c/ChannelID/MessageID
+            # شناسه کانال خصوصی (با -100)
             chat_id = int("-100" + path_parts[1])
             message_id = int(path_parts[2])
             return chat_id, message_id
         
-        elif len(path_parts) >= 1:
+        elif len(path_parts) >= 2:
             # لینک به شکل https://t.me/ChannelUsername/MessageID
-            # یا اگر t.me/ تنها باشد، این قسمت کار نمی کند و باید لینک کامل باشد.
-            if len(path_parts) == 1:
-                # ممکن است یک یوزرنیم کانال باشد، اما MessageID لازم است.
-                return None, None
-            
             chat_id = "@" + path_parts[0]
             message_id = int(path_parts[1])
             return chat_id, message_id
@@ -84,18 +82,19 @@ def parse_post_link(link):
 
 
 async def run_session_command(session_string, command, channel_username, avatar_folder=None, message_id=None):
-    """یک عملیات مشخص را روی یک سشن فیک اجرا می کند."""
+    """یک عملیات مشخص را روی یک سشن فیک اجرا می کند و نتیجه شامل نام سشن و پیام است."""
     
     # Pyrogram برای نام سشن به یک نام یونیک نیاز دارد، از یک UUID استفاده می کنیم.
-    session_name = "Session_" + str(random.randint(10000, 99999)) 
+    # برای ردیابی خطاها، بخش کوچکی از سشن استرینگ را به عنوان نام استفاده می کنیم
+    session_name = "Session_" + session_string[:6] 
     
     # 2. تعریف کلاینت با استفاده از Session String
     app_client = Client(
         name=session_name,
-        api_id=API_ID,
+        api_id=API_ID, 
         api_hash=API_HASH,
         session_string=session_string, # استفاده از سشن استرینگ
-        in_memory=True # بهتر است برای سشن استرینگ ها از in_memory استفاده شود
+        in_memory=True 
     )
     avatar_path = get_random_avatar_path(avatar_folder) if command == 'set_profile' else None
 
@@ -103,78 +102,64 @@ async def run_session_command(session_string, command, channel_username, avatar_
         # اتصال به سشن
         await app_client.start()
         
-        # برای اطمینان از دسترسی به چت، آن را دریافت می کنیم
-        try:
-            target_chat = await app_client.get_chat(channel_username)
-        except Exception:
-             # اگر کانال یافت نشد یا دسترسی نبود، خطا می دهد و ادامه نمی دهیم
-            await app_client.stop()
-            return f"❌ [خطا] {session_name}: کانال {channel_username} یافت نشد یا سشن دسترسی ندارد."
-
-
         if command == 'add_member':
-            # Pyrogram به صورت هوشمند از join_chat برای کانال ها استفاده می کند.
             await app_client.join_chat(channel_username)
-            result = f"✅ [افزودن موفق] {session_name} به {channel_username} اضافه شد."
+            result = f"✅ [افزودن موفق] به {channel_username} اضافه شد."
         
         elif command == 'remove_member':
             await app_client.leave_chat(channel_username)
-            result = f"🗑️ [حذف موفق] {session_name} از {channel_username} حذف شد."
+            result = f"🗑️ [حذف موفق] از {channel_username} حذف شد."
 
         elif command == 'set_profile' and avatar_path:
-            # حذف عکس قدیمی (برای طبیعی بودن) و تنظیم عکس جدید
             photos = await app_client.get_profile_photos("me")
             if photos:
-                # حذف همه عکس های قدیمی
                 await app_client.delete_profile_photos([p.file_id for p in photos])
             
             await app_client.set_profile_photo(photo=avatar_path)
             
-            # افزودن نام فیک رندوم برای واقعی تر شدن
             first_names = ["علی", "سارا", "رضا", "مریم", "جواد", "زهرا", "محمد", "فاطمه", "امیر", "لیلا"]
             last_names = ["کرمی", "احمدی", "نوری", "حسینی", "رضایی", "طاهری", "شریفی", "قاسمی", "صابری", "کیانی"]
             
-            # تنظیم نام و نام خانوادگی
             await app_client.update_profile(
                 first_name=random.choice(first_names), 
                 last_name=random.choice(last_names)
             )
 
-            result = f"🖼️ [تنظیم پروفایل] {session_name} با عکس رندوم و نام جدید به‌روزرسانی شد."
+            result = f"🖼️ [تنظیم پروفایل] با عکس رندوم و نام جدید به‌روزرسانی شد."
 
         elif command == 'add_view':
             if not message_id:
-                await app_client.stop()
-                return f"❌ [خطا] {session_name}: شناسه پیام برای بازدید لازم است."
-            
-            # 1. مطمئن می شویم سشن در کانال عضو است
-            try:
-                # اگر سشن عضو نباشد، join_chat سعی می کند عضو شود.
-                await app_client.join_chat(channel_username) 
-            except Exception:
-                await app_client.stop()
-                return f"⚠️ [خطا] {session_name}: نتوانست عضو کانال شود. بازدید انجام نشد."
+                result = f"❌ [خطا] شناسه پیام برای بازدید لازم است."
+            else:
+                # 1. مطمئن می شویم سشن در کانال عضو است
+                try:
+                    await app_client.join_chat(channel_username) 
+                except Exception as e:
+                    # این خطا می تواند به دلیل خصوصی بودن کانال بدون لینک دعوت باشد.
+                    await app_client.stop()
+                    return (session_name, f"⚠️ [خطای عضویت] نتوانست عضو کانال شود. ({type(e).__name__})")
 
-            # 2. بازدید از پست (فراخوانی get_messages یا read_history بازدید را ثبت می کند)
-            # Pyrogram با خواندن پیام ها به صورت خودکار بازدید را ثبت می کند.
-            await app_client.get_messages(
-                chat_id=channel_username, 
-                message_ids=message_id, 
-                replies=0
-            )
-
-            result = f"👁️ [بازدید موفق] {session_name} پست {message_id} را در {channel_username} بازدید کرد."
+                # 2. بازدید از پست
+                await app_client.get_messages(
+                    chat_id=channel_username, 
+                    message_ids=message_id, 
+                    replies=0
+                )
+                result = f"👁️ [بازدید موفق] پست {message_id} را در {channel_username} بازدید کرد."
         
         else:
-            result = f"❓ [عملیات نامشخص] {session_name} عملیات انجام نشد."
+            result = f"❓ [عملیات نامشخص] عملیات انجام نشد."
 
         await app_client.stop()
-        return result
+        # در صورت موفقیت، نام سشن و پیام موفقیت آمیز را برمی گرداند.
+        return (session_name, result)
         
     except Exception as e:
         # مکث تصادفی برای جلوگیری از محدودیت‌های سیل (Flood Limit)
         await asyncio.sleep(random.uniform(5, 15)) 
-        return f"❌ [خطا در {command}] {session_name}: {type(e).__name__}: {str(e)}"
+        # در صورت خطا، نام سشن و پیام خطا را برمی گرداند.
+        error_message = f"❌ [خطای بحرانی در {command}] {type(e).__name__}: {str(e)}"
+        return (session_name, error_message)
 
 # --- تعریف ربات تلگرامی (Bot Client) ---
 
@@ -229,86 +214,102 @@ async def callback_handler(client, callback_query):
     global TARGET_CHANNEL 
     data = callback_query.data
     
+    # 1. پاسخ به دکمه برای حذف حالت لودینگ
     await callback_query.answer("درخواست شما در حال پردازش است.", show_alert=False)
     
     session_strings = get_session_strings(SESSION_RAW_FILE)
-    
-    # --- عملیات افزودن ممبر ---
-    if data == "add_members":
-        if not session_strings:
-            return await callback_query.message.edit_text(f"❌ هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` یافت نشد.", reply_markup=main_menu())
 
-        await callback_query.message.edit_text(f"شروع افزودن {len(session_strings)} ممبر به **{TARGET_CHANNEL}**...", reply_markup=None)
+    # برای جلوگیری از خطای MessageNotModified، عملیات ویرایش را در try/except قرار می دهیم
+    try:
         
-        results = await asyncio.gather(*[
-            run_session_command(s, 'add_member', TARGET_CHANNEL) for s in session_strings
-        ])
-        
-        success_count = sum(1 for r in results if r.startswith("✅"))
-        await callback_query.message.reply_text(
-            f"✅ **عملیات افزودن به پایان رسید:** {success_count}/{len(session_strings)} موفق.", 
-            reply_markup=main_menu()
-        )
-    
-    # --- عملیات حذف ممبر ---
-    elif data == "remove_members":
-        if not session_strings:
-            return await callback_query.message.edit_text(f"❌ هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` یافت نشد.", reply_markup=main_menu())
+        # --- عملیات افزودن ممبر ---
+        if data == "add_members":
+            if not session_strings:
+                await callback_query.message.edit_text(f"❌ هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` یافت نشد.", reply_markup=main_menu())
+                return
 
-        await callback_query.message.edit_text(f"شروع حذف {len(session_strings)} ممبر از **{TARGET_CHANNEL}**...", reply_markup=None)
-        
-        results = await asyncio.gather(*[
-            run_session_command(s, 'remove_member', TARGET_CHANNEL) for s in session_strings
-        ])
-        
-        success_count = sum(1 for r in results if r.startswith("🗑️"))
-        await callback_query.message.reply_text(
-            f"🗑️ **عملیات حذف به پایان رسید:** {success_count}/{len(session_strings)} موفق.", 
-            reply_markup=main_menu()
-        )
-
-    # --- عملیات تنظیم پروفایل (رندوم) ---
-    elif data == "set_profiles":
-        if not session_strings:
-             return await callback_query.message.edit_text(f"❌ هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` برای تنظیم پروفایل یافت نشد.", reply_markup=main_menu())
-
-        if not get_random_avatar_path(AVATAR_FOLDER):
-            return await callback_query.message.edit_text(
-                f"!!! خطا: پوشه **`{AVATAR_FOLDER}`** خالی است.\n\n"
-                f"لطفا چند عکس با ظاهر واقعی را در این پوشه قرار دهید.",
+            await callback_query.message.edit_text(f"شروع افزودن {len(session_strings)} ممبر به **{TARGET_CHANNEL}**...", reply_markup=None)
+            
+            # ... بقیه منطق ...
+            results = await asyncio.gather(*[
+                run_session_command(s, 'add_member', TARGET_CHANNEL) for s in session_strings
+            ])
+            success_count = sum(1 for _, r in results if r.startswith("✅"))
+            await callback_query.message.reply_text(
+                f"✅ **عملیات افزودن به پایان رسید:** {success_count}/{len(session_strings)} موفق.", 
                 reply_markup=main_menu()
             )
         
-        await callback_query.message.edit_text(f"🖼️ شروع تنظیم پروفایل رندوم برای {len(session_strings)} سشن...", reply_markup=None)
-        
-        results = await asyncio.gather(*[
-            run_session_command(s, 'set_profile', TARGET_CHANNEL, AVATAR_FOLDER) for s in session_strings
-        ])
+        # --- عملیات حذف ممبر ---
+        elif data == "remove_members":
+            if not session_strings:
+                await callback_query.message.edit_text(f"❌ هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` یافت نشد.", reply_markup=main_menu())
+                return
 
-        success_count = sum(1 for r in results if r.startswith("🖼️"))
-        await callback_query.message.reply_text(
-            f"🖼️ **عملیات تنظیم پروفایل به پایان رسید:** {success_count}/{len(session_strings)} موفق.", 
-            reply_markup=main_menu()
-        )
-        
-    # --- شبیه ساز بازدید/ری‌اکشن ---
-    elif data == "simulate_views":
-        await callback_query.message.edit_text(
-            "⚠️ **مدیریت بازدید/ری‌اکشن:**\n\n"
-            "برای افزودن بازدید واقعی به پست، دستور زیر را ارسال کنید:\n"
-            "دستور بازدید: `/boost <تعداد_بازدید> <لینک_پست>`\n"
-            "مثال: `/boost 100 https://t.me/ChannelUsername/1234`\n\n"
-            "**توجه:** ری‌اکشن هنوز پیاده‌سازی نشده است.",
-            reply_markup=main_menu()
-        )
-        
-    # --- تنظیم کانال هدف ---
-    elif data == "set_channel":
-        await callback_query.message.edit_text(
-            "لطفاً یوزرنیم کانال هدف جدید را به صورت زیر ارسال کنید:\n"
-            "`/setchannel @YourNewChannel`",
-            reply_markup=main_menu()
-        )
+            await callback_query.message.edit_text(f"شروع حذف {len(session_strings)} ممبر از **{TARGET_CHANNEL}**...", reply_markup=None)
+            
+            # ... بقیه منطق ...
+            results = await asyncio.gather(*[
+                run_session_command(s, 'remove_member', TARGET_CHANNEL) for s in session_strings
+            ])
+            success_count = sum(1 for _, r in results if r.startswith("🗑️"))
+            await callback_query.message.reply_text(
+                f"🗑️ **عملیات حذف به پایان رسید:** {success_count}/{len(session_strings)} موفق.", 
+                reply_markup=main_menu()
+            )
+
+        # --- عملیات تنظیم پروفایل (رندوم) ---
+        elif data == "set_profiles":
+            if not session_strings:
+                await callback_query.message.edit_text(f"❌ هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` برای تنظیم پروفایل یافت نشد.", reply_markup=main_menu())
+                return
+
+            if not get_random_avatar_path(AVATAR_FOLDER):
+                await callback_query.message.edit_text(
+                    f"!!! خطا: پوشه **`{AVATAR_FOLDER}`** خالی است.\n\n"
+                    f"لطفا چند عکس با ظاهر واقعی را در این پوشه قرار دهید.",
+                    reply_markup=main_menu()
+                )
+                return
+            
+            await callback_query.message.edit_text(f"🖼️ شروع تنظیم پروفایل رندوم برای {len(session_strings)} سشن...", reply_markup=None)
+            
+            # ... بقیه منطق ...
+            results = await asyncio.gather(*[
+                run_session_command(s, 'set_profile', TARGET_CHANNEL, AVATAR_FOLDER) for s in session_strings
+            ])
+            success_count = sum(1 for _, r in results if r.startswith("🖼️"))
+            await callback_query.message.reply_text(
+                f"🖼️ **عملیات تنظیم پروفایل به پایان رسید:** {success_count}/{len(session_strings)} موفق.", 
+                reply_markup=main_menu()
+            )
+            
+        # --- شبیه‌ساز بازدید/ری‌اکشن ---
+        elif data == "simulate_views":
+            # این همان بخشی است که MessageNotModified در آن رخ داده بود.
+            await callback_query.message.edit_text(
+                "⚠️ **مدیریت بازدید/ری‌اکشن:**\n\n"
+                "برای افزودن بازدید واقعی به پست، دستور زیر را ارسال کنید:\n"
+                "دستور بازدید: `/boost <تعداد_بازدید> <لینک_پست>`\n"
+                "مثال: `/boost 100 https://t.me/ChannelUsername/1234`\n\n"
+                "**توجه:** ری‌اکشن هنوز پیاده‌سازی نشده است.",
+                reply_markup=main_menu()
+            )
+            
+        # --- تنظیم کانال هدف ---
+        elif data == "set_channel":
+            await callback_query.message.edit_text(
+                "لطفاً یوزرنیم کانال هدف جدید را به صورت زیر ارسال کنید:\n"
+                "`/setchannel @YourNewChannel`",
+                reply_markup=main_menu()
+            )
+
+    except MessageNotModified:
+        # اگر کاربر دکمه را دو بار فشار دهد، این خطا رخ می دهد و ما آن را نادیده می گیریم.
+        pass
+
+    except Exception as e:
+        await callback_query.message.reply_text(f"خطای ناشناخته در Callback: {type(e).__name__}: {str(e)}", reply_markup=main_menu())
         
 # --- هندلر دستور /boost (بازدید واقعی) ---
 @bot_app.on_message(filters.command("boost") & filters.user(ADMIN_ID))
@@ -340,10 +341,10 @@ async def boost_command(client, message):
         # محدود کردن تعداد سشن‌ها به تعداد درخواستی
         sessions_to_use = session_strings[:min(count, len(session_strings))]
         
-        await message.reply_text(
+        processing_message = await message.reply_text(
             f"🚀 **شروع عملیات بازدید واقعی:**\n\n"
             f"تعداد سشن‌های مورد استفاده: **{len(sessions_to_use)}** (حداکثر {count} بازدید درخواست شده)\n"
-            f"هدف: **{channel_id}/{message_id}**\n\n"
+            f"هدف: **{channel_id} / پست {message_id}**\n\n"
             f"**لطفا صبر کنید...** این عملیات ممکن است کمی زمان ببرد.",
             reply_markup=None
         )
@@ -354,19 +355,44 @@ async def boost_command(client, message):
             for s in sessions_to_use
         ]
         
+        # نتایج به صورت لیست تاپل (session_name, result_message) برگردانده می شوند
         results = await asyncio.gather(*tasks)
         
-        success_count = sum(1 for r in results if r.startswith("👁️"))
+        success_count = 0
+        error_messages = []
         
-        await message.reply_text(
+        for name, result_msg in results:
+            if result_msg.startswith("👁️"):
+                success_count += 1
+            elif result_msg.startswith("❌") or result_msg.startswith("⚠️"):
+                error_messages.append(f"`{name}`: {result_msg}")
+        
+        # پیام نهایی (ویرایش پیام در حال پردازش)
+        await processing_message.edit_text(
             f"✅ **عملیات بازدید به پایان رسید:**\n"
             f"بازدیدهای موفق: **{success_count}** از {len(sessions_to_use)} سشن.", 
             reply_markup=main_menu()
         )
+        
+        # ارسال پیام خطاها (اگر وجود داشته باشد)
+        if error_messages:
+            error_text = (
+                f"🚨 **گزارش خطاها ({len(error_messages)} خطا):**\n\n"
+                f"این سشن‌ها نتوانستند بازدید را ثبت کنند. دلایل احتمالی: اعتبار سشن منقضی شده، بن شدن، یا خصوصی بودن کانال بدون عضویت قبلی.\n\n"
+                + "\n".join(error_messages[:10]) # نمایش 10 خطای اول
+            )
+            
+            if len(error_messages) > 10:
+                error_text += f"\n... و {len(error_messages) - 10} خطای دیگر."
+                
+            # ارسال به صورت پیام جداگانه برای خوانایی بهتر
+            await message.reply_text(error_text, parse_mode="markdown")
+
 
     except ValueError:
         await message.reply_text("لطفاً یک عدد صحیح برای تعداد وارد کنید.", reply_markup=main_menu())
     except Exception as e:
+        # در اینجا خطاهای اجرای اصلی (مانند مشکل اتصال) را مدیریت می کنیم
         await message.reply_text(f"خطا در اجرای دستور: {e}", reply_markup=main_menu())
 
 # --- هندلر دستور /setchannel (تنظیم کانال هدف) ---
