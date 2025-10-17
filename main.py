@@ -1,5 +1,5 @@
 # این ربات تلگرامی به عنوان پنل دکمه ای برای مدیریت عملیات های ممبر فیک، بازدید و پروفایل عمل می کند.
-# توجه: تمام سشن های فیک از پوشه 'fake_sessions/' خوانده می شود.
+# توجه: تمام سشن استرینگ های فیک از فایل 'aaaaaaaaaa_sessions_raw.txt' خوانده می شود.
 # هشدار: مقادیر API_ID, API_HASH, ADMIN_ID و BOT_TOKEN به صورت مستقیم در این کد تعریف شده‌اند.
 
 from pyrogram import Client, filters
@@ -17,18 +17,26 @@ ADMIN_ID = 7423552124  # <-- شناسه عددی شما
 BOT_TOKEN = "8463921895:AAH8gcFXP6SgF7JDa37fS8parztegDeRsEs" # <-- توکن ربات شما
 
 # --- تنظیمات عمومی ---
-# این یوزرنیم کانال هدف پیش فرض است. با استفاده از پنل ربات قابل تغییر است.
 TARGET_CHANNEL = "@Your_Target_Channel_Username_Here" 
-SESSION_FOLDER = "fake_sessions/" 
 AVATAR_FOLDER = "random_avatars/" # پوشه تصاویر واقعی برای پروفایل فیک ها
+SESSION_RAW_FILE = "aaaaaaaaaa_sessions_raw.txt" # <--- نام فایل سشن شما
 
 # --- توابع کمکی ---
 
-def get_session_files(folder):
-    """لیست فایل های سشن اکانت های فیک را دریافت می کند."""
-    if not os.path.exists(folder):
+def get_session_strings(filepath):
+    """سشن استرینگ ها را از هر خط فایل متنی می خواند."""
+    try:
+        if not os.path.exists(filepath):
+            # اگر فایل وجود ندارد، یک لیست خالی برمی گردانیم
+            return []
+            
+        with open(filepath, 'r', encoding='utf-8') as f:
+            # هر خطی که خالی نیست و کاراکترهای سفید ندارد را به عنوان سشن استرینگ می خواند
+            sessions = [line.strip() for line in f if line.strip()]
+        return sessions
+    except Exception as e:
+        print(f"❌ خطای بحرانی در خواندن فایل سشن {filepath}: {e}")
         return []
-    return [f for f in os.listdir(folder) if f.endswith(".session")]
 
 
 def get_random_avatar_path(avatar_folder):
@@ -45,30 +53,21 @@ def get_random_avatar_path(avatar_folder):
     except Exception:
         return None
 
-async def run_session_command(session_filename, command, channel_username, avatar_folder=None):
+async def run_session_command(session_string, command, channel_username, avatar_folder=None):
     """یک عملیات مشخص را روی یک سشن فیک اجرا می کند."""
     
-    session_name = session_filename.rsplit('.', 1)[0]
-    session_file_path = os.path.join(SESSION_FOLDER, session_filename)
-    session_string = None
+    # Pyrogram برای نام سشن به یک نام یونیک نیاز دارد، از یک UUID استفاده می کنیم.
+    # به خاطر اینکه سشن استرینگ در Pyrogram خود شامل اطلاعات احراز هویت است، ما فقط باید آن را وارد کنیم.
+    # نام سشن می تواند هر چیزی باشد.
+    session_name = "Session_" + str(random.randint(10000, 99999)) 
     
-    # 1. بارگذاری Session String از فایل .session
-    try:
-        # اینجا فرض می کنیم فایل های .session حاوی session_string هستند
-        with open(session_file_path, 'r', encoding='utf-8') as f:
-            session_string = f.read().strip()
-        if not session_string:
-            return f"❌ [خطا] {session_name}: فایل سشن خالی است."
-    except Exception as e:
-        return f"❌ [خطا در خواندن] {session_name}: {e}"
-
     # 2. تعریف کلاینت با استفاده از Session String
     app_client = Client(
         name=session_name,
         api_id=API_ID,
         api_hash=API_HASH,
-        session_string=session_string,
-        workdir=SESSION_FOLDER
+        session_string=session_string, # استفاده از سشن استرینگ
+        in_memory=True # بهتر است برای سشن استرینگ ها از in_memory استفاده شود
     )
     avatar_path = get_random_avatar_path(avatar_folder) if command == 'set_profile' else None
 
@@ -86,6 +85,7 @@ async def run_session_command(session_filename, command, channel_username, avata
 
 
         if command == 'add_member':
+            # Pyrogram به صورت هوشمند از join_chat برای کانال ها استفاده می کند.
             await app_client.join_chat(channel_username)
             result = f"✅ [افزودن موفق] {session_name} به {channel_username} اضافه شد."
         
@@ -158,9 +158,11 @@ def main_menu():
 
 @bot_app.on_message(filters.command("start") & filters.user(ADMIN_ID))
 async def start_command(client, message):
-    num_sessions = len(get_session_files(SESSION_FOLDER))
+    session_strings = get_session_strings(SESSION_RAW_FILE)
+    num_sessions = len(session_strings)
+    
     if not num_sessions:
-        info_text = "⚠️ **خطا:** هیچ سشنی در پوشه `fake_sessions/` یافت نشد. لطفا ابتدا سشن های خود را قرار دهید."
+        info_text = f"⚠️ **خطا:** هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` یافت نشد."
     else:
         info_text = f"✅ **پنل فعال:** {num_sessions} سشن فیک آماده کار هستند."
 
@@ -178,46 +180,46 @@ async def callback_handler(client, callback_query):
     
     await callback_query.answer("درخواست شما در حال پردازش است.", show_alert=False)
     
-    sessions = get_session_files(SESSION_FOLDER)
+    session_strings = get_session_strings(SESSION_RAW_FILE)
     
     # --- عملیات افزودن ممبر ---
     if data == "add_members":
-        if not sessions:
-            return await callback_query.message.edit_text("❌ هیچ سشنی در پوشه 'fake_sessions/' یافت نشد.", reply_markup=main_menu())
+        if not session_strings:
+            return await callback_query.message.edit_text(f"❌ هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` یافت نشد.", reply_markup=main_menu())
 
-        await callback_query.message.edit_text(f"شروع افزودن {len(sessions)} ممبر به **{TARGET_CHANNEL}**...", reply_markup=None)
+        await callback_query.message.edit_text(f"شروع افزودن {len(session_strings)} ممبر به **{TARGET_CHANNEL}**...", reply_markup=None)
         
         results = await asyncio.gather(*[
-            run_session_command(s, 'add_member', TARGET_CHANNEL) for s in sessions
+            run_session_command(s, 'add_member', TARGET_CHANNEL) for s in session_strings
         ])
         
         success_count = sum(1 for r in results if r.startswith("✅"))
         await callback_query.message.reply_text(
-            f"✅ **عملیات افزودن به پایان رسید:** {success_count}/{len(sessions)} موفق.", 
+            f"✅ **عملیات افزودن به پایان رسید:** {success_count}/{len(session_strings)} موفق.", 
             reply_markup=main_menu()
         )
     
     # --- عملیات حذف ممبر ---
     elif data == "remove_members":
-        if not sessions:
-            return await callback_query.message.edit_text("❌ هیچ سشنی در پوشه 'fake_sessions/' یافت نشد.", reply_markup=main_menu())
+        if not session_strings:
+            return await callback_query.message.edit_text(f"❌ هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` یافت نشد.", reply_markup=main_menu())
 
-        await callback_query.message.edit_text(f"شروع حذف {len(sessions)} ممبر از **{TARGET_CHANNEL}**...", reply_markup=None)
+        await callback_query.message.edit_text(f"شروع حذف {len(session_strings)} ممبر از **{TARGET_CHANNEL}**...", reply_markup=None)
         
         results = await asyncio.gather(*[
-            run_session_command(s, 'remove_member', TARGET_CHANNEL) for s in sessions
+            run_session_command(s, 'remove_member', TARGET_CHANNEL) for s in session_strings
         ])
         
         success_count = sum(1 for r in results if r.startswith("🗑️"))
         await callback_query.message.reply_text(
-            f"🗑️ **عملیات حذف به پایان رسید:** {success_count}/{len(sessions)} موفق.", 
+            f"🗑️ **عملیات حذف به پایان رسید:** {success_count}/{len(session_strings)} موفق.", 
             reply_markup=main_menu()
         )
 
     # --- عملیات تنظیم پروفایل (رندوم) ---
     elif data == "set_profiles":
-        if not sessions:
-             return await callback_query.message.edit_text("❌ هیچ سشنی برای تنظیم پروفایل یافت نشد.", reply_markup=main_menu())
+        if not session_strings:
+             return await callback_query.message.edit_text(f"❌ هیچ سشن استرینگی در فایل `{SESSION_RAW_FILE}` برای تنظیم پروفایل یافت نشد.", reply_markup=main_menu())
 
         if not get_random_avatar_path(AVATAR_FOLDER):
             return await callback_query.message.edit_text(
@@ -226,15 +228,15 @@ async def callback_handler(client, callback_query):
                 reply_markup=main_menu()
             )
         
-        await callback_query.message.edit_text(f"🖼️ شروع تنظیم پروفایل رندوم برای {len(sessions)} سشن...", reply_markup=None)
+        await callback_query.message.edit_text(f"🖼️ شروع تنظیم پروفایل رندوم برای {len(session_strings)} سشن...", reply_markup=None)
         
         results = await asyncio.gather(*[
-            run_session_command(s, 'set_profile', TARGET_CHANNEL, AVATAR_FOLDER) for s in sessions
+            run_session_command(s, 'set_profile', TARGET_CHANNEL, AVATAR_FOLDER) for s in session_strings
         ])
 
         success_count = sum(1 for r in results if r.startswith("🖼️"))
         await callback_query.message.reply_text(
-            f"🖼️ **عملیات تنظیم پروفایل به پایان رسید:** {success_count}/{len(sessions)} موفق.", 
+            f"🖼️ **عملیات تنظیم پروفایل به پایان رسید:** {success_count}/{len(session_strings)} موفق.", 
             reply_markup=main_menu()
         )
         
