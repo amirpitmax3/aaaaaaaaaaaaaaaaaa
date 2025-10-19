@@ -903,6 +903,9 @@ def login_page(token):
             logger.warning(f"Invalid, used, or expired token received: {token}")
             return render_template_string(HTML_TEMPLATE, title="لینک منقضی شده", message="این لینک ورود نامعتبر یا منقضی شده است.", error="لطفاً به ربات بازگشته و فرآیند را از ابتدا شروع کنید تا یک لینک جدید دریافت نمایید.")
 
+        # Lock the session to prevent re-entry
+        LOGIN_SESSIONS[token]['step'] = 'processing_send_code'
+
         phone = LOGIN_SESSIONS[token]['phone']
         user_id = LOGIN_SESSIONS[token]['user_id']
         client_name = f"login_{user_id}_{token[:8]}"
@@ -1161,4 +1164,5 @@ if __name__ == "__main__":
             os.remove(LOCK_FILE_PATH)
         
         logger.info("Closing the event loop.")
-        loop.close()
+        loop.close()" in the document "amirpitmax3/aaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaa-main/main.py".
+
