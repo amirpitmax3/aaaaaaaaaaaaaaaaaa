@@ -1,3 +1,6 @@
+python-telegram-bot[persistence]
 pyrogram
-TgCrypto
-flask
+tgcrypto
+Flask
+APScheduler
+gunicorn
