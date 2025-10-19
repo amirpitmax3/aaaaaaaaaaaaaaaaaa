@@ -122,7 +122,7 @@ application = None # Define application globally so Flask routes can access job_
 
 
 # --- متغیرهای ربات ---
-TELEGRAM_TOKEN = "8402541044:AAE_BPC0_o7ENO4JwR7yFb9DTRrHudApkos"
+TELEGRAM_TOKEN = "8367987651:AAE4qOeiBpJNH4fjCt1trzM7g5cKF8s8qGM"
 API_ID = 29645784
 API_HASH = "19e8465032deba8145d40fc4beb91744"
 OWNER_ID = 7423552124 # ادمین اصلی
