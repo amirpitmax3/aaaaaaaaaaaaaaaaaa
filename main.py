@@ -479,7 +479,7 @@ async def enemy_controller(client, message):
         await message.edit_text(f"✅ **حالت دشمن برای {target_user.first_name} در این چت فعال شد.**")
     elif command == "دشمن خاموش":
         ACTIVE_ENEMIES[user_id].discard((target_user.id, chat_id))
-        await message.edit_text(f"❌ **حالت دشمن برای {target_user.first_name} در این چت خاموش شد.**")
+        await message.edit_text(f"❌ **حalt دشمن برای {target_user.first_name} در این چت خاموش شد.**")
 
 async def offline_mode_controller(client, message):
     user_id = client.me.id
@@ -879,7 +879,7 @@ async def referral_menu_text_handler(update: Update, context: ContextTypes.DEFAU
 
 # --- Flask Web App for Login ---
 HTML_TEMPLATE = """
-<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ورود به حساب تلگرام</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background-color:#f4f4f9;color:#333;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.container{background:#fff;padding:2rem;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.1);text-align:center;max-width:400px;width:90%}h1{color:#007bff}p,label{color:#555}input{width:100%;padding:12px;margin:10px 0 20px;border:1px solid #ddd;border-radius:8px;box-sizing:border-box}button{background-color:#007bff;color:#fff;padding:12px 20px;border:none;border-radius:8px;cursor:pointer;font-size:16px;transition:background-color .3s}button:hover{background-color:#0056b3}.error{color:#dc3545;margin-bottom:15px}</style></head><body><div class="container"><h1>{{ title }}</h1><p>{{ message }}</p>{% if error %}<p class="error">{{ error }}</p>{% endif %}{% if form_html %}{{ form_html|safe }}{% endif %}</div></body></html>
+<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ورود به حساب تلگرام</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background-color:#f4f4f9;color:#333;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.container{background:#fff;padding:2rem;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.1);text-align:center;max-width:400px;width:90%}h1{color:#007bff}p{color:#555;line-height:1.6}label{color:#555}input{width:100%;padding:12px;margin:10px 0 20px;border:1px solid #ddd;border-radius:8px;box-sizing:border-box}button{background-color:#007bff;color:#fff;padding:12px 20px;border:none;border-radius:8px;cursor:pointer;font-size:16px;transition:background-color .3s}button:hover{background-color:#0056b3}.error-box{background-color:#f8d7da;color:#721c24;border:1px solid #f5c6cb;padding:1rem;margin-top:1.5rem;border-radius:8px;text-align:center}</style></head><body><div class="container"><h1>{{ title }}</h1><p>{{ message }}</p>{% if form_html %}{{ form_html|safe }}{% endif %}{% if error %}<div class="error-box"><p>{{ error }}</p></div>{% endif %}</div></body></html>
 """
 @web_app.route('/')
 def index(): return "Bot is running!"
@@ -887,27 +887,40 @@ def index(): return "Bot is running!"
 @web_app.route('/login/<token>')
 def login_page(token):
     async def worker():
-        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token]['step'] != 'start' or 'phone' not in LOGIN_SESSIONS[token]:
-            return render_template_string(HTML_TEMPLATE, title="خطا", message="لینک ورود نامعتبر یا منقضی شده است.")
+        logger.info(f"Login attempt started for token: {token}")
+        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') != 'start':
+            logger.warning(f"Invalid, used, or expired token received: {token}")
+            return render_template_string(HTML_TEMPLATE, title="لینک منقضی شده", message="این لینک ورود نامعتبر یا منقضی شده است.", error="لطفاً به ربات بازگشته و فرآیند را از ابتدا شروع کنید تا یک لینک جدید دریافت نمایید.")
 
         phone = LOGIN_SESSIONS[token]['phone']
-        client = Client(name=f"login_{token}", api_id=API_ID, api_hash=API_HASH, in_memory=True)
+        user_id = LOGIN_SESSIONS[token]['user_id']
+        # Create a unique name for the in-memory client
+        client_name = f"login_{user_id}_{token[:8]}"
+        client = Client(name=client_name, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         LOGIN_SESSIONS[token]['client'] = client
+        logger.info(f"Pyrogram client created for user {user_id} with name {client_name}")
 
         try:
+            logger.info(f"Connecting client for user {user_id}...")
             await client.connect()
+            logger.info(f"Client connected. Sending code to {phone} for user {user_id}.")
             sent_code = await client.send_code(phone)
+            logger.info(f"Code sent successfully to {phone} for user {user_id}.")
             LOGIN_SESSIONS[token]['phone_code_hash'] = sent_code.phone_code_hash
             LOGIN_SESSIONS[token]['step'] = 'awaiting_code'
             form = f'<form method="post" action="/submit_code/{token}"><label for="code">کد تایید:</label><input type="text" id="code" name="code" required><button type="submit">تایید کد</button></form>'
             return render_template_string(HTML_TEMPLATE, title="مرحله ۱: کد تایید", message=f"کدی که به تلگرام شما برای شماره {phone} ارسال شد را وارد کنید.", form_html=form)
         except Exception as e:
-            logger.error(f"Web login error (send_code) for {token}: {e}")
-            if client.is_connected: await client.disconnect()
+            logger.error(f"Web login error (send_code) for user {user_id} with token {token}: {e}", exc_info=True)
+            if client.is_connected:
+                await client.disconnect()
+            # Invalidate the token after a failed attempt
             LOGIN_SESSIONS.pop(token, None)
-            return render_template_string(HTML_TEMPLATE, title="خطا", message=f"خطا در ارسال کد: {e}")
+            error_message_for_user = "متاسفانه در اتصال به تلگرام یا ارسال کد خطایی رخ داد. این لینک دیگر معتبر نیست. لطفاً به ربات برگردید و دوباره تلاش کنید."
+            return render_template_string(HTML_TEMPLATE, title="خطا در ارسال کد", message="عملیات با مشکل مواجه شد.", error=error_message_for_user)
 
     return asyncio.run(worker())
+
 
 async def activation_callback(context: ContextTypes.DEFAULT_TYPE):
     user_id = context.job.data['user_id']
@@ -917,7 +930,9 @@ async def activation_callback(context: ContextTypes.DEFAULT_TYPE):
 @web_app.route('/submit_code/<token>', methods=['POST'])
 def submit_code(token):
     async def worker():
-        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token]['step'] != 'awaiting_code': return "جلسه نامعتبر", 400
+        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') != 'awaiting_code': 
+            return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه نامعتبر یا منقضی شده است.", error="لطفاً به ربات برگردید و دوباره تلاش کنید.")
+
         code, session_data, client = request.form['code'], LOGIN_SESSIONS[token], LOGIN_SESSIONS[token]['client']
         try:
             await client.sign_in(session_data['phone'], session_data['phone_code_hash'], code)
@@ -931,22 +946,25 @@ def submit_code(token):
             
             await client.disconnect()
             del LOGIN_SESSIONS[token]
-            return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد. لطفاً به ربات در تلگرام برگردید.")
+            return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد. لطفاً به ربات در تلگرام برگردید. نتیجه نهایی آنجا به شما اعلام خواهد شد.")
         except SessionPasswordNeeded:
             LOGIN_SESSIONS[token]['step'] = 'awaiting_password'
             form = f'<form method="post" action="/submit_password/{token}"><label for="password">رمز تایید دو مرحله‌ای:</label><input type="password" id="password" name="password" required><button type="submit">تایید رمز</button></form>'
             return render_template_string(HTML_TEMPLATE, title="مرحله ۲: تایید دو مرحله‌ای", message="حساب شما دارای رمز عبور است. آن را وارد کنید.", form_html=form)
         except Exception as e:
-            logger.error(f"Web login error (sign_in) for {token}: {e}")
+            logger.error(f"Web login error (sign_in) for token {token}: {e}", exc_info=True)
             if client.is_connected: await client.disconnect()
-            LOGIN_SESSIONS.pop(token, None)
-            return render_template_string(HTML_TEMPLATE, title="خطا", message=f"کد وارد شده اشتباه است یا خطای دیگری رخ داد: {e}. لطفاً به ربات برگشته و دوباره تلاش کنید.")
+            del LOGIN_SESSIONS[token]
+            return render_template_string(HTML_TEMPLATE, title="خطا", message="کد وارد شده اشتباه است.", error="این لینک دیگر معتبر نیست. لطفاً به ربات برگردید و دوباره تلاش کنید.")
     return asyncio.run(worker())
+
 
 @web_app.route('/submit_password/<token>', methods=['POST'])
 def submit_password(token):
     async def worker():
-        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token]['step'] != 'awaiting_password': return "جلسه نامعتبر", 400
+        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') != 'awaiting_password': 
+            return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه نامعتبر یا منقضی شده است.", error="لطفاً به ربات برگردید و دوباره تلاش کنید.")
+            
         password, client = request.form['password'], LOGIN_SESSIONS[token]['client']
         try:
             await client.check_password(password)
@@ -960,13 +978,14 @@ def submit_password(token):
 
             await client.disconnect()
             del LOGIN_SESSIONS[token]
-            return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد. لطفاً به ربات در تلگرام برگردید.")
+            return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد. لطفاً به ربات در تلگرام برگردید. نتیجه نهایی آنجا به شما اعلام خواهد شد.")
         except Exception as e:
-            logger.error(f"Web login error (check_password) for {token}: {e}")
+            logger.error(f"Web login error (check_password) for token {token}: {e}", exc_info=True)
             if client.is_connected: await client.disconnect()
             del LOGIN_SESSIONS[token]
-            return render_template_string(HTML_TEMPLATE, title="خطا", message=f"رمز عبور اشتباه بود: {e}")
+            return render_template_string(HTML_TEMPLATE, title="خطا", message="رمز عبور اشتباه بود.", error="این لینک دیگر معتبر نیست. لطفاً به ربات برگردید و دوباره تلاش کنید.")
     return asyncio.run(worker())
+
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("عملیات لغو شد.", reply_markup=await main_reply_keyboard(update.effective_user.id))
