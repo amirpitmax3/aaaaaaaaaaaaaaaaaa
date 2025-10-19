@@ -4,3 +4,4 @@ tgcrypto
 Flask
 APScheduler
 gunicorn
+aiohttp
