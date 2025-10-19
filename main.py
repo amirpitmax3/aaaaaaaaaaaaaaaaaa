@@ -1001,6 +1001,3 @@ if __name__ == "__main__":
         main()
     finally:
         if os.path.exists(LOCK_FILE_PATH): os.remove(LOCK_FILE_PATH)
-" in the document "Telegram Bot Script". I am now asking the following query:
-The bet is not random, it is one in the middle, make it completely random
-
