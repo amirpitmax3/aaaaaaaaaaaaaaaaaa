@@ -65,16 +65,53 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log Errors and handle Conflict error gracefully."""
     if isinstance(context.error, Conflict):
-        logger.warning("Conflict error detected. Requesting application stop.")
-        # This will cause the run_polling loop to stop gracefully
-        await context.application.stop()
+        logger.warning("Conflict error detected. Another instance of the bot is running.")
+        logger.info("This instance will shut down gracefully to resolve the conflict.")
+        # Stop the application if it's running. This will cause run_polling() to exit.
+        if context.application.is_running:
+            await context.application.stop()
         return
-    
+
+    # Log other exceptions with full traceback
     logger.error(f"Exception while handling an update:", exc_info=context.error)
-    
+
+    # Try to send a detailed error report to the admins
+    try:
+        tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+        tb_string = "".join(tb_list)
+        
+        # Sanitize the update object for logging
+        update_str = str(update) if isinstance(update, Update) else "No update object available"
+        user_info = "N/A"
+        if isinstance(update, Update) and update.effective_user:
+            user_info = f"{update.effective_user.id}"
+
+        message = (
+            f"<b>Unhandled Exception Occurred</b>\n\n"
+            f"<b>User:</b> <code>{user_info}</code>\n"
+            f"<b>Error:</b> <code>{html.escape(str(context.error))}</code>\n\n"
+            f"<b>Traceback:</b>\n<pre>{html.escape(tb_string[-3000:])}</pre>\n\n"
+            f"<b>Update:</b>\n<pre>{html.escape(update_str[:500])}</pre>"
+        )
+        
+        for admin_id in get_admins():
+            try:
+                await context.bot.send_message(chat_id=admin_id, text=message, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                # If sending the full message fails, send a simpler one
+                logger.error(f"Failed to send full error report to admin {admin_id}: {e}")
+                await context.bot.send_message(
+                    chat_id=admin_id, 
+                    text=f"An error occurred: {context.error}. See server logs for full traceback."
+                )
+
+    except Exception as e:
+        logger.error(f"Failed to formulate or send error report to admin: {e}")
 
 
 # --- بخش وب سرور برای Ping و لاگین ---
@@ -448,11 +485,11 @@ async def clean_up_user_session(user_id: int):
         try:
             user_data = get_user(user_id)
             if user_data and user_data['base_first_name']:
-                 await client.update_profile(first_name=user_data['base_first_name'], last_name=user_data['base_last_name'] or "")
+                await client.update_profile(first_name=user_data['base_first_name'], last_name=user_data['base_last_name'] or "")
         except Exception as e:
             logger.error(f"Could not restore name for user {user_id} on cleanup: {e}")
         finally:
-             await client.stop()
+            await client.stop()
 
     ACTIVE_ENEMIES.pop(user_id, None)
     ENEMY_REPLY_QUEUES.pop(user_id, None)
@@ -1127,12 +1164,16 @@ def main_sync() -> None:
 
 
 if __name__ == "__main__":
-    if os.path.exists(LOCK_FILE_PATH): 
-        logger.critical(f"Lock file exists. Exiting.")
-        sys.exit(0)
-    
+    if os.path.exists(LOCK_FILE_PATH):
+        logger.critical(f"Lock file {LOCK_FILE_PATH} exists. Another instance may be running. Exiting.")
+        sys.exit(1)
+
+    loop = None
     try:
-        with open(LOCK_FILE_PATH, "w") as f: f.write(str(os.getpid()))
+        with open(LOCK_FILE_PATH, "w") as f:
+            f.write(str(os.getpid()))
+        
+        # This will ensure the lock file is removed upon script exit, clean or not.
         atexit.register(lambda: os.path.exists(LOCK_FILE_PATH) and os.remove(LOCK_FILE_PATH))
         
         # Build the application
@@ -1142,6 +1183,7 @@ if __name__ == "__main__":
         loop = asyncio.get_event_loop()
         web_app.loop = loop # Make it accessible to the Flask thread
         
+        # Run Flask in a separate thread
         flask_thread = Thread(target=lambda: web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))))
         flask_thread.daemon = True
         flask_thread.start()
@@ -1151,18 +1193,36 @@ if __name__ == "__main__":
         loop.run_until_complete(app.run_polling(drop_pending_updates=True))
 
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped manually or due to conflict.")
+        logger.info("Bot stopped manually or via SystemExit.")
+    except Exception as e:
+        logger.critical(f"An unhandled exception occurred in the main execution block: {e}", exc_info=True)
     finally:
+        logger.info("Initiating shutdown sequence...")
+        # The app.run_polling() has exited, either by stop() or another error.
+
         # Gracefully stop all running user sessions before closing the loop
-        if user_sessions:
-            logger.info("Cleaning up active user sessions...")
-            cleanup_tasks = [clean_up_user_session(user_id) for user_id in list(user_sessions.keys())]
-            loop.run_until_complete(asyncio.gather(*cleanup_tasks))
-            logger.info("All user sessions cleaned up.")
+        if user_sessions and loop and not loop.is_closed():
+            logger.info(f"Cleaning up {len(user_sessions)} active user session(s)...")
+            try:
+                cleanup_tasks = [clean_up_user_session(user_id) for user_id in list(user_sessions.keys())]
+                # Create a single task to run all cleanup coroutines concurrently
+                gathered_tasks = asyncio.gather(*cleanup_tasks)
+                loop.run_until_complete(gathered_tasks)
+                logger.info("All user sessions cleaned up successfully.")
+            except Exception as e:
+                logger.error(f"An error occurred during user session cleanup: {e}", exc_info=True)
 
-        if os.path.exists(LOCK_FILE_PATH): 
+        # The lock file is handled by atexit, but we can remove it here as well
+        if os.path.exists(LOCK_FILE_PATH):
             os.remove(LOCK_FILE_PATH)
-        
-        logger.info("Closing the event loop.")
-        loop.close()
+            logger.info("Lock file removed.")
 
+        # Give a moment for network connections to close cleanly before the process dies.
+        # This can help mitigate immediate Conflict errors on restart.
+        time.sleep(1)
+
+        if loop and not loop.is_closed():
+            logger.info("Closing the event loop.")
+            loop.close()
+        
+        logger.info("Bot has been shut down.")
