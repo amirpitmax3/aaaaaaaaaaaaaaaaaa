@@ -70,7 +70,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     if isinstance(context.error, Conflict):
         logger.warning("Conflict error detected. This instance will stop polling gracefully and exit.")
         # Stop the application properly
-        if context.application.is_running:
+        if context.application.running:
             await context.application.stop()
             await context.application.shutdown()
         # Exit the process to allow the hosting service to restart it cleanly
