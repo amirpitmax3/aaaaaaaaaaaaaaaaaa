@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+پ# -*- coding: utf-8 -*-
 
 import os
 import sqlite3
@@ -894,30 +894,36 @@ def login_page(token):
 
         phone = LOGIN_SESSIONS[token]['phone']
         user_id = LOGIN_SESSIONS[token]['user_id']
-        # Create a unique name for the in-memory client
         client_name = f"login_{user_id}_{token[:8]}"
         client = Client(name=client_name, api_id=API_ID, api_hash=API_HASH, in_memory=True)
         LOGIN_SESSIONS[token]['client'] = client
-        logger.info(f"Pyrogram client created for user {user_id} with name {client_name}")
-
+        
+        error_message = None
         try:
             logger.info(f"Connecting client for user {user_id}...")
-            await client.connect()
+            await asyncio.wait_for(client.connect(), timeout=20.0)
+            
             logger.info(f"Client connected. Sending code to {phone} for user {user_id}.")
-            sent_code = await client.send_code(phone)
+            sent_code = await asyncio.wait_for(client.send_code(phone), timeout=20.0)
+            
             logger.info(f"Code sent successfully to {phone} for user {user_id}.")
             LOGIN_SESSIONS[token]['phone_code_hash'] = sent_code.phone_code_hash
             LOGIN_SESSIONS[token]['step'] = 'awaiting_code'
             form = f'<form method="post" action="/submit_code/{token}"><label for="code">کد تایید:</label><input type="text" id="code" name="code" required><button type="submit">تایید کد</button></form>'
             return render_template_string(HTML_TEMPLATE, title="مرحله ۱: کد تایید", message=f"کدی که به تلگرام شما برای شماره {phone} ارسال شد را وارد کنید.", form_html=form)
+        
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout occurred during login process for user {user_id} with token {token}.")
+            error_message = "اتصال به سرورهای تلگرام بیش از حد طول کشید. این لینک منقضی شد. لطفاً به ربات برگردید و دوباره تلاش کنید."
         except Exception as e:
             logger.error(f"Web login error (send_code) for user {user_id} with token {token}: {e}", exc_info=True)
-            if client.is_connected:
-                await client.disconnect()
-            # Invalidate the token after a failed attempt
-            LOGIN_SESSIONS.pop(token, None)
-            error_message_for_user = "متاسفانه در اتصال به تلگرام یا ارسال کد خطایی رخ داد. این لینک دیگر معتبر نیست. لطفاً به ربات برگردید و دوباره تلاش کنید."
-            return render_template_string(HTML_TEMPLATE, title="خطا در ارسال کد", message="عملیات با مشکل مواجه شد.", error=error_message_for_user)
+            error_message = f"در فرآیند ارسال کد خطایی رخ داد: ({type(e).__name__}). این لینک منقضی شد. لطفاً به ربات برگردید و دوباره تلاش کنید."
+
+        # This part runs ONLY if an exception was caught
+        if client.is_connected:
+            await client.disconnect()
+        LOGIN_SESSIONS.pop(token, None) # Invalidate the token
+        return render_template_string(HTML_TEMPLATE, title="خطا در ارتباط", message="عملیات با مشکل مواجه شد.", error=error_message)
 
     return asyncio.run(worker())
 
@@ -933,29 +939,40 @@ def submit_code(token):
         if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') != 'awaiting_code': 
             return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه نامعتبر یا منقضی شده است.", error="لطفاً به ربات برگردید و دوباره تلاش کنید.")
 
-        code, session_data, client = request.form['code'], LOGIN_SESSIONS[token], LOGIN_SESSIONS[token]['client']
+        code = request.form['code']
+        session_data = LOGIN_SESSIONS[token]
+        client = session_data['client']
+        
         try:
-            await client.sign_in(session_data['phone'], session_data['phone_code_hash'], code)
+            await asyncio.wait_for(client.sign_in(session_data['phone'], session_data['phone_code_hash'], code), timeout=20.0)
+            
             session_string = await client.export_session_string()
-            user_id = LOGIN_SESSIONS[token]['user_id']
+            user_id = session_data['user_id']
             
             application.job_queue.run_once(
                 activation_callback, when=0, 
                 data={'user_id': user_id, 'session_string': session_string}
             )
             
-            await client.disconnect()
-            del LOGIN_SESSIONS[token]
             return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد. لطفاً به ربات در تلگرام برگردید. نتیجه نهایی آنجا به شما اعلام خواهد شد.")
+        
         except SessionPasswordNeeded:
             LOGIN_SESSIONS[token]['step'] = 'awaiting_password'
             form = f'<form method="post" action="/submit_password/{token}"><label for="password">رمز تایید دو مرحله‌ای:</label><input type="password" id="password" name="password" required><button type="submit">تایید رمز</button></form>'
             return render_template_string(HTML_TEMPLATE, title="مرحله ۲: تایید دو مرحله‌ای", message="حساب شما دارای رمز عبور است. آن را وارد کنید.", form_html=form)
+        
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout occurred during sign_in for token {token}.")
+            error_message = "تایید کد بیش از حد طول کشید. این لینک منقضی شد."
         except Exception as e:
             logger.error(f"Web login error (sign_in) for token {token}: {e}", exc_info=True)
-            if client.is_connected: await client.disconnect()
-            del LOGIN_SESSIONS[token]
-            return render_template_string(HTML_TEMPLATE, title="خطا", message="کد وارد شده اشتباه است.", error="این لینک دیگر معتبر نیست. لطفاً به ربات برگردید و دوباره تلاش کنید.")
+            error_message = "کد وارد شده اشتباه است یا خطای دیگری رخ داد. این لینک منقضی شد."
+
+        # Cleanup on error
+        if client.is_connected: await client.disconnect()
+        del LOGIN_SESSIONS[token]
+        return render_template_string(HTML_TEMPLATE, title="خطا", message="عملیات ناموفق بود.", error=error_message + " لطفاً به ربات برگردید و دوباره تلاش کنید.")
+        
     return asyncio.run(worker())
 
 
@@ -965,9 +982,12 @@ def submit_password(token):
         if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') != 'awaiting_password': 
             return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه نامعتبر یا منقضی شده است.", error="لطفاً به ربات برگردید و دوباره تلاش کنید.")
             
-        password, client = request.form['password'], LOGIN_SESSIONS[token]['client']
+        password = request.form['password']
+        client = LOGIN_SESSIONS[token]['client']
+
         try:
-            await client.check_password(password)
+            await asyncio.wait_for(client.check_password(password), timeout=20.0)
+
             session_string = await client.export_session_string()
             user_id = LOGIN_SESSIONS[token]['user_id']
 
@@ -975,15 +995,21 @@ def submit_password(token):
                 activation_callback, when=0,
                 data={'user_id': user_id, 'session_string': session_string}
             )
-
-            await client.disconnect()
-            del LOGIN_SESSIONS[token]
+            
             return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد. لطفاً به ربات در تلگرام برگردید. نتیجه نهایی آنجا به شما اعلام خواهد شد.")
+        
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout occurred during check_password for token {token}.")
+            error_message = "تایید رمز بیش از حد طول کشید. این لینک منقضی شد."
         except Exception as e:
             logger.error(f"Web login error (check_password) for token {token}: {e}", exc_info=True)
-            if client.is_connected: await client.disconnect()
-            del LOGIN_SESSIONS[token]
-            return render_template_string(HTML_TEMPLATE, title="خطا", message="رمز عبور اشتباه بود.", error="این لینک دیگر معتبر نیست. لطفاً به ربات برگردید و دوباره تلاش کنید.")
+            error_message = "رمز عبور وارد شده اشتباه بود. این لینک منقضی شد."
+
+        # Cleanup on error
+        if client.is_connected: await client.disconnect()
+        del LOGIN_SESSIONS[token]
+        return render_template_string(HTML_TEMPLATE, title="خطا", message="عملیات ناموفق بود.", error=error_message + " لطفاً به ربات برگردید و دوباره تلاش کنید.")
+
     return asyncio.run(worker())
 
 
