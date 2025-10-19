@@ -73,7 +73,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.warning("Conflict error detected. Another instance of the bot is running.")
         logger.info("This instance will shut down gracefully to resolve the conflict.")
         # Stop the application if it's running. This will cause run_polling() to exit.
-        if context.application.is_running:
+        if context.application.running:
             await context.application.stop()
         return
 
