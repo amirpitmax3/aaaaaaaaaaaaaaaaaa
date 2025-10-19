@@ -68,9 +68,14 @@ logger = logging.getLogger(__name__)
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(context.error, Conflict):
-        logger.warning("Conflict error detected. This instance will stop polling gracefully.")
-        context.application.stop()
-        return
+        logger.warning("Conflict error detected. This instance will stop polling gracefully and exit.")
+        # Stop the application properly
+        if context.application.is_running:
+            await context.application.stop()
+            await context.application.shutdown()
+        # Exit the process to allow the hosting service to restart it cleanly
+        sys.exit(0)
+    
     logger.error(f"Exception while handling an update:", exc_info=context.error)
     
 
@@ -323,6 +328,13 @@ user_sessions = {}
 async def self_pro_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_db = get_user(user_id)
+    
+    # Check if a login process is already active for this user
+    for token, session in list(LOGIN_SESSIONS.items()):
+        if session.get('user_id') == user_id:
+            await update.message.reply_text("شما یک فرآیند ورود فعال دارید. لطفاً از لینکی که قبلاً برایتان ارسال شده استفاده کنید یا چند دقیقه صبر کرده و دوباره تلاش نمایید.")
+            return ConversationHandler.END
+
     if user_db['self_active']:
         await update.message.reply_text("⚙️ منوی مدیریت Self Pro:", reply_markup=await self_pro_management_keyboard(user_id))
         return ConversationHandler.END
