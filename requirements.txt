@@ -5,3 +5,4 @@ Flask
 APScheduler
 gunicorn
 aiohttp
+pymongo
