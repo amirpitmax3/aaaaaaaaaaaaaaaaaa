@@ -1,4 +1,4 @@
-پ# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 
 import os
 import sqlite3
@@ -1094,4 +1094,7 @@ if __name__ == "__main__":
         main()
     finally:
         if os.path.exists(LOCK_FILE_PATH): os.remove(LOCK_FILE_PATH)
+
+" and have a request, please answer my query.
+این ارور رو درستش کن
 
