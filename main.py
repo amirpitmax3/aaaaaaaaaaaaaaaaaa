@@ -68,13 +68,10 @@ logger = logging.getLogger(__name__)
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(context.error, Conflict):
-        logger.warning("Conflict error detected. This instance will stop polling gracefully and exit.")
-        # Stop the application properly
-        if context.application.running:
-            await context.application.stop()
-            await context.application.shutdown()
-        # Exit the process to allow the hosting service to restart it cleanly
-        sys.exit(0)
+        logger.warning("Conflict error detected. Requesting application stop.")
+        # This will cause the run_polling loop to stop gracefully
+        await context.application.stop()
+        return
     
     logger.error(f"Exception while handling an update:", exc_info=context.error)
     
@@ -1029,7 +1026,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("عملیات لغو شد.", reply_markup=await main_reply_keyboard(update.effective_user.id))
     return ConversationHandler.END
 
-def main() -> None:
+async def main() -> None:
     global application
     setup_database()
     persistence = PicklePersistence(filepath=os.path.join(DATA_PATH, "bot_persistence.pickle"))
@@ -1092,18 +1089,35 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.REPLY & filters.ChatType.GROUPS & filters.Regex(r'^(انتقال الماس\s*\d+|\d+)$'), handle_transfer))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, group_text_handler))
     
-    logger.info("Bot is starting...")
-    application.run_polling(drop_pending_updates=True)
+    logger.info("Bot is initializing...")
+    await application.initialize()
+
+    logger.info("Bot is starting polling...")
+    await application.run_polling(drop_pending_updates=True)
+    
+    logger.info("Polling finished. Shutting down application...")
+    await application.shutdown()
+    logger.info("Application shut down gracefully.")
+
 
 if __name__ == "__main__":
-    if os.path.exists(LOCK_FILE_PATH): logger.critical(f"Lock file exists. Exiting."); sys.exit(0)
+    if os.path.exists(LOCK_FILE_PATH): 
+        logger.critical(f"Lock file exists. Exiting.")
+        sys.exit(0)
+    
     try:
         with open(LOCK_FILE_PATH, "w") as f: f.write(str(os.getpid()))
         atexit.register(lambda: os.path.exists(LOCK_FILE_PATH) and os.remove(LOCK_FILE_PATH))
+        
         flask_thread = Thread(target=lambda: web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))))
         flask_thread.daemon = True
         flask_thread.start()
-        main()
+        
+        asyncio.run(main())
+
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped manually or due to conflict.")
     finally:
-        if os.path.exists(LOCK_FILE_PATH): os.remove(LOCK_FILE_PATH)
+        if os.path.exists(LOCK_FILE_PATH): 
+            os.remove(LOCK_FILE_PATH)
 
