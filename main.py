@@ -1055,7 +1055,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("عملیات لغو شد.", reply_markup=await main_reply_keyboard(update.effective_user.id))
     return ConversationHandler.END
 
-async def main() -> None:
+def main_sync() -> None:
     global application
     setup_database()
     persistence = PicklePersistence(filepath=os.path.join(DATA_PATH, "bot_persistence.pickle"))
@@ -1119,14 +1119,8 @@ async def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, group_text_handler))
     
     logger.info("Bot is initializing...")
-    await application.initialize()
-
-    logger.info("Bot is starting polling...")
-    await application.run_polling(drop_pending_updates=True)
-    
-    logger.info("Polling finished. Shutting down application...")
-    await application.shutdown()
-    logger.info("Application shut down gracefully.")
+    # The application is returned to be run by the main async context
+    return application
 
 
 if __name__ == "__main__":
@@ -1134,22 +1128,24 @@ if __name__ == "__main__":
         logger.critical(f"Lock file exists. Exiting.")
         sys.exit(0)
     
-    # Create and set the main event loop
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    # Make it accessible to the Flask thread
-    web_app.loop = loop 
-
     try:
         with open(LOCK_FILE_PATH, "w") as f: f.write(str(os.getpid()))
         atexit.register(lambda: os.path.exists(LOCK_FILE_PATH) and os.remove(LOCK_FILE_PATH))
+        
+        # Build the application
+        app = main_sync()
+        
+        # Get the event loop that PTB will use
+        loop = asyncio.get_event_loop()
+        web_app.loop = loop # Make it accessible to the Flask thread
         
         flask_thread = Thread(target=lambda: web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))))
         flask_thread.daemon = True
         flask_thread.start()
         
-        # Run the main async function on the loop
-        loop.run_until_complete(main())
+        # Run the bot on the event loop
+        logger.info("Bot is starting polling...")
+        loop.run_until_complete(app.run_polling(drop_pending_updates=True))
 
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped manually or due to conflict.")
