@@ -81,6 +81,8 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 web_app = Flask(__name__)
 WEB_APP_URL = os.environ.get("RENDER_EXTERNAL_URL", "http://127.0.0.1:10000") 
 LOGIN_SESSIONS = {}
+application = None # Define application globally so Flask routes can access job_queue
+
 
 # --- متغیرهای ربات ---
 TELEGRAM_TOKEN = "8367987651:AAE4qOeiBpJNH4fjCt1trzM7g5cKF8s8qGM"
@@ -934,7 +936,16 @@ def login_page(token):
         LOGIN_SESSIONS.pop(token, None) # Invalidate the token
         return render_template_string(HTML_TEMPLATE, title="خطا در ارتباط", message="عملیات با مشکل مواجه شد.", error=error_message)
 
-    return asyncio.run(worker())
+    if hasattr(web_app, 'loop') and web_app.loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(worker(), web_app.loop)
+        try:
+            return future.result(timeout=45) # Add a generous timeout
+        except Exception as e:
+            logger.error(f"Error getting result from Flask worker future: {e}")
+            return "خطای داخلی سرور هنگام پردازش درخواست.", 500
+    
+    logger.error("Main event loop is not available or not running for Flask handler.")
+    return "خطای داخلی سرور: حلقه رویداد در دسترس نیست.", 500
 
 
 async def activation_callback(context: ContextTypes.DEFAULT_TYPE):
@@ -982,7 +993,16 @@ def submit_code(token):
         del LOGIN_SESSIONS[token]
         return render_template_string(HTML_TEMPLATE, title="خطا", message="عملیات ناموفق بود.", error=error_message + " لطفاً به ربات برگردید و دوباره تلاش کنید.")
         
-    return asyncio.run(worker())
+    if hasattr(web_app, 'loop') and web_app.loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(worker(), web_app.loop)
+        try:
+            return future.result(timeout=30)
+        except Exception as e:
+            logger.error(f"Error getting result from Flask worker future: {e}")
+            return "خطای داخلی سرور هنگام پردازش درخواست.", 500
+    
+    logger.error("Main event loop is not available or not running for Flask handler.")
+    return "خطای داخلی سرور: حلقه رویداد در دسترس نیست.", 500
 
 
 @web_app.route('/submit_password/<token>', methods=['POST'])
@@ -1019,7 +1039,16 @@ def submit_password(token):
         del LOGIN_SESSIONS[token]
         return render_template_string(HTML_TEMPLATE, title="خطا", message="عملیات ناموفق بود.", error=error_message + " لطفاً به ربات برگردید و دوباره تلاش کنید.")
 
-    return asyncio.run(worker())
+    if hasattr(web_app, 'loop') and web_app.loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(worker(), web_app.loop)
+        try:
+            return future.result(timeout=30)
+        except Exception as e:
+            logger.error(f"Error getting result from Flask worker future: {e}")
+            return "خطای داخلی سرور هنگام پردازش درخواست.", 500
+    
+    logger.error("Main event loop is not available or not running for Flask handler.")
+    return "خطای داخلی سرور: حلقه رویداد در دسترس نیست.", 500
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1105,6 +1134,12 @@ if __name__ == "__main__":
         logger.critical(f"Lock file exists. Exiting.")
         sys.exit(0)
     
+    # Create and set the main event loop
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    # Make it accessible to the Flask thread
+    web_app.loop = loop 
+
     try:
         with open(LOCK_FILE_PATH, "w") as f: f.write(str(os.getpid()))
         atexit.register(lambda: os.path.exists(LOCK_FILE_PATH) and os.remove(LOCK_FILE_PATH))
@@ -1113,11 +1148,21 @@ if __name__ == "__main__":
         flask_thread.daemon = True
         flask_thread.start()
         
-        asyncio.run(main())
+        # Run the main async function on the loop
+        loop.run_until_complete(main())
 
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped manually or due to conflict.")
     finally:
+        # Gracefully stop all running user sessions before closing the loop
+        if user_sessions:
+            logger.info("Cleaning up active user sessions...")
+            cleanup_tasks = [clean_up_user_session(user_id) for user_id in list(user_sessions.keys())]
+            loop.run_until_complete(asyncio.gather(*cleanup_tasks))
+            logger.info("All user sessions cleaned up.")
+
         if os.path.exists(LOCK_FILE_PATH): 
             os.remove(LOCK_FILE_PATH)
-
+        
+        logger.info("Closing the event loop.")
+        loop.close()
