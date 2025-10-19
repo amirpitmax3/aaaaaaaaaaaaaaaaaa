@@ -1166,10 +1166,3 @@ if __name__ == "__main__":
         logger.info("Closing the event loop.")
         loop.close()
 
-" in the document "amirpitmax3/aaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaa-main/main.py".
-
-Please remove this part in the end of the script:
-" and have a request, please answer my query.
-این ارور رو درستش کن
-". It is not part of the code and I forgot to remove it. Thanks
-
