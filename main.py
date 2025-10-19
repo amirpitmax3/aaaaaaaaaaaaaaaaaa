@@ -936,18 +936,38 @@ def index(): return "Bot is running!"
 def login_page(token):
     async def worker():
         logger.info(f"Login attempt started for token: {token}")
-        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') != 'start':
-            logger.warning(f"Invalid, used, or expired token received: {token}")
-            return render_template_string(HTML_TEMPLATE, title="لینک منقضی شده", message="این لینک ورود نامعتبر یا منقضی شده است.", error="لطفاً به ربات بازگشته و فرآیند را از ابتدا شروع کنید تا یک لینک جدید دریافت نمایید.")
+        
+        if token not in LOGIN_SESSIONS:
+            logger.warning(f"Token {token} not found in LOGIN_SESSIONS.")
+            return render_template_string(HTML_TEMPLATE, title="لینک نامعتبر", message="این لینک ورود نامعتبر یا منقضی شده است.", error="لطفاً به ربات بازگشته و فرآیند را از ابتدا شروع کنید.")
 
-        # Lock the session to prevent re-entry
-        LOGIN_SESSIONS[token]['step'] = 'processing_send_code'
+        session_data = LOGIN_SESSIONS[token]
+        current_step = session_data.get('step')
+        phone = session_data.get('phone')
 
-        phone = LOGIN_SESSIONS[token]['phone']
-        user_id = LOGIN_SESSIONS[token]['user_id']
+        # If we are already at a later stage, re-render the appropriate page instead of erroring out.
+        if current_step == 'awaiting_code':
+            logger.info(f"Re-serving code entry page for token {token}.")
+            form = f'<form method="post" action="/submit_code/{token}"><label for="code">کد تایید:</label><input type="text" id="code" name="code" required><button type="submit">تایید کد</button></form>'
+            return render_template_string(HTML_TEMPLATE, title="مرحله ۱: کد تایید", message=f"کدی که به تلگرام شما برای شماره {phone} ارسال شد را وارد کنید.", form_html=form)
+
+        if current_step == 'awaiting_password':
+            logger.info(f"Re-serving password entry page for token {token}.")
+            form = f'<form method="post" action="/submit_password/{token}"><label for="password">رمز تایید دو مرحله‌ای:</label><input type="password" id="password" name="password" required><button type="submit">تایید رمز</button></form>'
+            return render_template_string(HTML_TEMPLATE, title="مرحله ۲: تایید دو مرحله‌ای", message="حساب شما دارای رمز عبور است. آن را وارد کنید.", form_html=form)
+
+        # Only proceed with sending code if the step is 'start'.
+        if current_step != 'start':
+            logger.warning(f"Invalid step '{current_step}' for a new login request with token {token}.")
+            return render_template_string(HTML_TEMPLATE, title="خطا در فرآیند", message="این لینک در مرحله دیگری از فرآیند ورود قرار دارد.", error="لطفاً صفحه را نبندید و مراحل را ادامه دهید یا برای شروع مجدد به ربات بازگردید.")
+
+        # Lock the session to prevent re-entry for the 'send_code' part.
+        session_data['step'] = 'processing_send_code'
+        
+        user_id = session_data['user_id']
         client_name = f"login_{user_id}_{token[:8]}"
         client = Client(name=client_name, api_id=API_ID, api_hash=API_HASH, in_memory=True)
-        LOGIN_SESSIONS[token]['client'] = client
+        session_data['client'] = client
         
         error_message = None
         try:
@@ -958,8 +978,9 @@ def login_page(token):
             sent_code = await asyncio.wait_for(client.send_code(phone), timeout=20.0)
             
             logger.info(f"Code sent successfully to {phone} for user {user_id}.")
-            LOGIN_SESSIONS[token]['phone_code_hash'] = sent_code.phone_code_hash
-            LOGIN_SESSIONS[token]['step'] = 'awaiting_code'
+            session_data['phone_code_hash'] = sent_code.phone_code_hash
+            session_data['step'] = 'awaiting_code'
+            
             form = f'<form method="post" action="/submit_code/{token}"><label for="code">کد تایید:</label><input type="text" id="code" name="code" required><button type="submit">تایید کد</button></form>'
             return render_template_string(HTML_TEMPLATE, title="مرحله ۱: کد تایید", message=f"کدی که به تلگرام شما برای شماره {phone} ارسال شد را وارد کنید.", form_html=form)
         
@@ -971,8 +992,8 @@ def login_page(token):
             error_message = f"در فرآیند ارسال کد خطایی رخ داد: ({type(e).__name__}). این لینک منقضی شد. لطفاً به ربات برگردید و دوباره تلاش کنید."
 
         # This part runs ONLY if an exception was caught
-        if client.is_connected:
-            await client.disconnect()
+        if 'client' in session_data and session_data['client'] and session_data['client'].is_connected:
+            await session_data['client'].disconnect()
         LOGIN_SESSIONS.pop(token, None) # Invalidate the token
         return render_template_string(HTML_TEMPLATE, title="خطا در ارتباط", message="عملیات با مشکل مواجه شد.", error=error_message)
 
@@ -996,7 +1017,7 @@ async def activation_callback(context: ContextTypes.DEFAULT_TYPE):
 @web_app.route('/submit_code/<token>', methods=['POST'])
 def submit_code(token):
     async def worker():
-        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') != 'awaiting_code': 
+        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') not in ['awaiting_code', 'awaiting_password']: 
             return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه نامعتبر یا منقضی شده است.", error="لطفاً به ربات برگردید و دوباره تلاش کنید.")
 
         code = request.form['code']
@@ -1017,7 +1038,7 @@ def submit_code(token):
             return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد. لطفاً به ربات در تلگرام برگردید. نتیجه نهایی آنجا به شما اعلام خواهد شد.")
         
         except SessionPasswordNeeded:
-            LOGIN_SESSIONS[token]['step'] = 'awaiting_password'
+            session_data['step'] = 'awaiting_password'
             form = f'<form method="post" action="/submit_password/{token}"><label for="password">رمز تایید دو مرحله‌ای:</label><input type="password" id="password" name="password" required><button type="submit">تایید رمز</button></form>'
             return render_template_string(HTML_TEMPLATE, title="مرحله ۲: تایید دو مرحله‌ای", message="حساب شما دارای رمز عبور است. آن را وارد کنید.", form_html=form)
         
@@ -1030,7 +1051,7 @@ def submit_code(token):
 
         # Cleanup on error
         if client.is_connected: await client.disconnect()
-        del LOGIN_SESSIONS[token]
+        LOGIN_SESSIONS.pop(token, None)
         return render_template_string(HTML_TEMPLATE, title="خطا", message="عملیات ناموفق بود.", error=error_message + " لطفاً به ربات برگردید و دوباره تلاش کنید.")
         
     if hasattr(web_app, 'loop') and web_app.loop.is_running():
@@ -1052,13 +1073,14 @@ def submit_password(token):
             return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه نامعتبر یا منقضی شده است.", error="لطفاً به ربات برگردید و دوباره تلاش کنید.")
             
         password = request.form['password']
-        client = LOGIN_SESSIONS[token]['client']
+        session_data = LOGIN_SESSIONS[token]
+        client = session_data['client']
 
         try:
             await asyncio.wait_for(client.check_password(password), timeout=20.0)
 
             session_string = await client.export_session_string()
-            user_id = LOGIN_SESSIONS[token]['user_id']
+            user_id = session_data['user_id']
 
             application.job_queue.run_once(
                 activation_callback, when=0,
@@ -1076,7 +1098,7 @@ def submit_password(token):
 
         # Cleanup on error
         if client.is_connected: await client.disconnect()
-        del LOGIN_SESSIONS[token]
+        LOGIN_SESSIONS.pop(token, None)
         return render_template_string(HTML_TEMPLATE, title="خطا", message="عملیات ناموفق بود.", error=error_message + " لطفاً به ربات برگردید و دوباره تلاش کنید.")
 
     if hasattr(web_app, 'loop') and web_app.loop.is_running():
@@ -1226,3 +1248,4 @@ if __name__ == "__main__":
             loop.close()
         
         logger.info("Bot has been shut down.")
+
