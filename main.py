@@ -122,7 +122,7 @@ application = None # Define application globally so Flask routes can access job_
 
 
 # --- متغیرهای ربات ---
-TELEGRAM_TOKEN = "8367987651:AAE4qOeiBpJNH4fjCt1trzM7g5cKF8s8qGM"
+TELEGRAM_TOKEN = "8402541044:AAE_BPC0_o7ENO4JwR7yFb9DTRrHudApkos"
 API_ID = 29645784
 API_HASH = "19e8465032deba8145d40fc4beb91744"
 OWNER_ID = 7423552124 # ادمین اصلی
@@ -142,9 +142,9 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     SETTING_SELF_COST, SETTING_CHANNEL_LINK, SETTING_REFERRAL_REWARD,
     SETTING_PAYMENT_CARD, SETTING_CARD_HOLDER,
     AWAITING_SUPPORT_MESSAGE, AWAITING_ADMIN_REPLY,
-    AWAIT_CONTACT, AWAIT_SESSION_STRING, # AWAIT_SESSION_STRING is no longer used in conversation but kept for range
+    AWAIT_SESSION_STRING,
     ADMIN_ADD, ADMIN_REMOVE
-) = range(16)
+) = range(15)
 
 
 # --- استایل‌های فونت ---
@@ -357,20 +357,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return ConversationHandler.END
 
-# --- Secure Self-Pro Activation Flow ---
+# --- Self-Pro Activation Flow (Copy-Paste Method) ---
 user_sessions = {}
 
 @channel_membership_required
-async def self_pro_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def self_pro_menu_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_db = get_user(user_id)
-    
-    # Check if a login process is already active for this user
-    for token, session in list(LOGIN_SESSIONS.items()):
-        if session.get('user_id') == user_id:
-            await update.message.reply_text("شما یک فرآیند ورود فعال دارید. لطفاً از لینکی که قبلاً برایتان ارسال شده استفاده کنید یا چند دقیقه صبر کرده و دوباره تلاش نمایید.")
-            return ConversationHandler.END
-
     if user_db['self_active']:
         await update.message.reply_text("⚙️ منوی مدیریت Self Pro:", reply_markup=await self_pro_management_keyboard(user_id))
         return ConversationHandler.END
@@ -379,69 +372,45 @@ async def self_pro_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"برای فعال سازی سلف، حداقل باید {hourly_cost} الماس موجودی داشته باشید.")
         return ConversationHandler.END
 
-    keyboard = [[KeyboardButton("✅ اشتراک‌گذاری شماره تلفن", request_contact=True)]]
-    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
-    await update.message.reply_text(
-        "برای شروع فرآیند فعال‌سازی، لطفاً شماره تلفن خود را از طریق دکمه زیر به اشتراک بگذارید.",
-        reply_markup=reply_markup
-    )
-    return AWAIT_CONTACT
-
-async def self_pro_receive_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    contact = update.effective_message.contact
-    phone_number = contact.phone_number
-    user_id = update.effective_user.id
-
-    if not phone_number.startswith('+'):
-        phone_number = '+' + phone_number
-
-    await update.message.reply_text(
-        f"شماره شما ({phone_number}) دریافت شد. در حال ایجاد لینک ورود امن...",
-        reply_markup=ReplyKeyboardRemove()
-    )
-
     login_token = secrets.token_urlsafe(16)
-    LOGIN_SESSIONS[login_token] = {
-        'user_id': user_id,
-        'step': 'start',
-        'phone': phone_number
-    }
+    LOGIN_SESSIONS[login_token] = {'user_id': user_id, 'step': 'start'}
     login_url = f"{WEB_APP_URL}/login/{login_token}"
-    text = (
-        f"✅ **لینک ورود امن شما آماده شد.**\n\n"
-        f"🔗 [برای ادامه اینجا کلیک کنید]({login_url})\n\n"
-        "مراحل را در صفحه وب دنبال کنید. پس از اتمام، ربات به صورت خودکار نتیجه را به شما اعلام خواهد کرد."
-    )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=await main_reply_keyboard(user_id))
-    return ConversationHandler.END
+    text = (f"✅ **برای فعال‌سازی Self Pro، روی لینک زیر کلیک کنید:**\n\n🔗 [لینک ورود امن]({login_url})\n\n"
+            "پس از اتمام مراحل در صفحه وب، Session String خود را کپی کرده و به اینجا برگردید و ارسال کنید.")
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=ReplyKeyboardRemove())
+    return AWAIT_SESSION_STRING
 
-
-async def complete_self_pro_activation(user_id: int, session_string: str):
-    await application.bot.send_message(user_id, "اطلاعات شما با موفقیت تایید شد. در حال فعال‌سازی نهایی سلف‌پرو...")
+async def process_session_string(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    session_string = update.message.text.strip()
+    await update.message.reply_text("در حال بررسی Session String... لطفاً صبر کنید.", reply_markup=await main_reply_keyboard(user_id))
     try:
         client = Client(name=f"verify_{user_id}", api_id=API_ID, api_hash=API_HASH, session_string=session_string, in_memory=True)
         await client.start()
         me = await client.get_me()
         await client.stop()
+        
         update_user_db(user_id, "base_first_name", me.first_name)
         update_user_db(user_id, "base_last_name", me.last_name or "")
         update_user_db(user_id, "self_active", True)
         update_user_db(user_id, "session_string", session_string)
+        
         permanent_client = Client(name=f"user_{user_id}", api_id=API_ID, api_hash=API_HASH, session_string=session_string, in_memory=True)
         permanent_client.add_handler(PyrogramMessageHandler(enemy_controller, pyrogram_filters.text & pyrogram_filters.reply & pyrogram_filters.me & pyrogram_filters.regex("^(دشمن فعال|دشمن خاموش)$")), group=0)
         permanent_client.add_handler(PyrogramMessageHandler(offline_mode_controller, pyrogram_filters.text & pyrogram_filters.me & pyrogram_filters.regex("^(حالت افلاین فعال|افلاین خاموش)$")), group=0)
         permanent_client.add_handler(PyrogramMessageHandler(enemy_handler, pyrogram_filters.text & (pyrogram_filters.group | pyrogram_filters.private) & ~pyrogram_filters.me), group=1)
         permanent_client.add_handler(PyrogramMessageHandler(offline_auto_reply_handler, pyrogram_filters.private & ~pyrogram_filters.me), group=1)
+        
         user_sessions[user_id] = permanent_client
-        asyncio.create_task(self_pro_background_task(user_id, permanent_client, application))
-        await application.bot.send_message(
-            user_id, 
-            "✅ Self Pro با موفقیت فعال شد! اکنون می‌توانید آن را مدیریت کنید:", 
-            reply_markup=await self_pro_management_keyboard(user_id)
-        )
+        asyncio.create_task(self_pro_background_task(user_id, permanent_client, context.application))
+        
+        await update.message.reply_text("✅ Self Pro با موفقیت فعال شد! اکنون می‌توانید آن را مدیریت کنید:", reply_markup=await self_pro_management_keyboard(user_id))
+        return ConversationHandler.END
     except Exception as e:
-        logger.error(f"Failed to complete self activation for {user_id}: {e}", exc_info=True)
-        await application.bot.send_message(user_id, f"❌ خطایی در مرحله نهایی فعال‌سازی رخ داد: `{e}`. لطفاً دوباره تلاش کنید.", parse_mode=ParseMode.MARKDOWN)
+        logger.error(f"Failed to activate self with session string for {user_id}: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Session String نامعتبر است یا خطایی رخ داد: `{e}`\n\nلطفا دوباره تلاش کنید.", parse_mode=ParseMode.MARKDOWN)
+        return AWAIT_SESSION_STRING
+
 
 async def self_pro_background_task(user_id: int, client: Client, application: Application):
     try:
@@ -502,7 +471,7 @@ async def reactivate_self_pro(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     update.effective_message.text = "🚀 Self Pro"
-    await self_pro_start(update.effective_message, context)
+    await self_pro_menu_text_handler(update.effective_message, context)
 
 
 # --- هندلرهای قابلیت‌های جدید ---
@@ -527,7 +496,7 @@ async def enemy_controller(client, message):
         await message.edit_text(f"✅ **حالت دشمن برای {target_user.first_name} در این چت فعال شد.**")
     elif command == "دشمن خاموش":
         ACTIVE_ENEMIES[user_id].discard((target_user.id, chat_id))
-        await message.edit_text(f"❌ **حalt دشمن برای {target_user.first_name} در این چت خاموش شد.**")
+        await message.edit_text(f"❌ **حالت دشمن برای {target_user.first_name} در این چت خاموش شد.**")
 
 async def offline_mode_controller(client, message):
     user_id = client.me.id
@@ -927,190 +896,104 @@ async def referral_menu_text_handler(update: Update, context: ContextTypes.DEFAU
 
 # --- Flask Web App for Login ---
 HTML_TEMPLATE = """
-<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ورود به حساب تلگرام</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background-color:#f4f4f9;color:#333;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.container{background:#fff;padding:2rem;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.1);text-align:center;max-width:400px;width:90%}h1{color:#007bff}p{color:#555;line-height:1.6}label{color:#555}input{width:100%;padding:12px;margin:10px 0 20px;border:1px solid #ddd;border-radius:8px;box-sizing:border-box}button{background-color:#007bff;color:#fff;padding:12px 20px;border:none;border-radius:8px;cursor:pointer;font-size:16px;transition:background-color .3s}button:hover{background-color:#0056b3}.error-box{background-color:#f8d7da;color:#721c24;border:1px solid #f5c6cb;padding:1rem;margin-top:1.5rem;border-radius:8px;text-align:center}</style></head><body><div class="container"><h1>{{ title }}</h1><p>{{ message }}</p>{% if form_html %}{{ form_html|safe }}{% endif %}{% if error %}<div class="error-box"><p>{{ error }}</p></div>{% endif %}</div></body></html>
+<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ورود به حساب تلگرام</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background-color:#f4f4f9;color:#333;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.container{background:#fff;padding:2rem;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.1);text-align:center;max-width:400px;width:90%}h1{color:#007bff}p,label{color:#555}input{width:100%;padding:12px;margin:10px 0 20px;border:1px solid #ddd;border-radius:8px;box-sizing:border-box}button{background-color:#007bff;color:#fff;padding:12px 20px;border:none;border-radius:8px;cursor:pointer;font-size:16px;transition:background-color .3s}button:hover{background-color:#0056b3}.session-box{background:#e9ecef;border:1px solid #ced4da;padding:15px;border-radius:8px;word-wrap:break-word;text-align:left;direction:ltr;margin-top:20px; user-select: all;}.error-box{background-color:#f8d7da;color:#721c24;border:1px solid #f5c6cb;padding:1rem;margin-top:1.5rem;border-radius:8px;text-align:center}</style></head><body><div class="container"><h1>{{ title }}</h1><p>{{ message }}</p>{% if error %}<div class="error-box"><p>{{ error }}</p></div>{% endif %}{% if form_html %}{{ form_html|safe }}{% endif %}{% if session_string %}<h3>Session String با موفقیت ایجاد شد!</h3><p>این متن را کپی کرده و به ربات تلگرام خود ارسال کنید.</p><div class="session-box"><code>{{ session_string }}</code></div>{% endif %}</div></body></html>
 """
 @web_app.route('/')
 def index(): return "Bot is running!"
 
 @web_app.route('/login/<token>')
-def login_page(token):
+def login_web_start(token):
+    if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token]['step'] != 'start':
+        return render_template_string(HTML_TEMPLATE, title="خطا", message="لینک ورود نامعتبر یا منقضی شده است.")
+    form = f'<form method="post" action="/submit_phone/{token}"><label for="phone">شماره تلفن (مثال: +989123456789):</label><input type="text" id="phone" name="phone" required><button type="submit">ارسال کد</button></form>'
+    return render_template_string(HTML_TEMPLATE, title="مرحله ۱: شماره تلفن", message="لطفاً شماره تلفن حساب تلگرام خود را وارد کنید.", form_html=form)
+
+@web_app.route('/submit_phone/<token>', methods=['POST'])
+def login_web_submit_phone(token):
     async def worker():
-        logger.info(f"Login attempt started for token: {token}")
-        
         if token not in LOGIN_SESSIONS:
-            logger.warning(f"Token {token} not found in LOGIN_SESSIONS.")
-            return render_template_string(HTML_TEMPLATE, title="لینک نامعتبر", message="این لینک ورود نامعتبر یا منقضی شده است.", error="لطفاً به ربات بازگشته و فرآیند را از ابتدا شروع کنید.")
-
-        session_data = LOGIN_SESSIONS[token]
-        current_step = session_data.get('step')
-        phone = session_data.get('phone')
-
-        # If we are already at a later stage, re-render the appropriate page instead of erroring out.
-        if current_step == 'awaiting_code':
-            logger.info(f"Re-serving code entry page for token {token}.")
-            form = f'<form method="post" action="/submit_code/{token}"><label for="code">کد تایید:</label><input type="text" id="code" name="code" required><button type="submit">تایید کد</button></form>'
-            return render_template_string(HTML_TEMPLATE, title="مرحله ۱: کد تایید", message=f"کدی که به تلگرام شما برای شماره {phone} ارسال شد را وارد کنید.", form_html=form)
-
-        if current_step == 'awaiting_password':
-            logger.info(f"Re-serving password entry page for token {token}.")
-            form = f'<form method="post" action="/submit_password/{token}"><label for="password">رمز تایید دو مرحله‌ای:</label><input type="password" id="password" name="password" required><button type="submit">تایید رمز</button></form>'
-            return render_template_string(HTML_TEMPLATE, title="مرحله ۲: تایید دو مرحله‌ای", message="حساب شما دارای رمز عبور است. آن را وارد کنید.", form_html=form)
-
-        # Only proceed with sending code if the step is 'start'.
-        if current_step != 'start':
-            logger.warning(f"Invalid step '{current_step}' for a new login request with token {token}.")
-            return render_template_string(HTML_TEMPLATE, title="خطا در فرآیند", message="این لینک در مرحله دیگری از فرآیند ورود قرار دارد.", error="لطفاً صفحه را نبندید و مراحل را ادامه دهید یا برای شروع مجدد به ربات بازگردید.")
-
-        # Lock the session to prevent re-entry for the 'send_code' part.
-        session_data['step'] = 'processing_send_code'
+            return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه منقضی شده است.")
         
-        user_id = session_data['user_id']
-        client_name = f"login_{user_id}_{token[:8]}"
-        client = Client(name=client_name, api_id=API_ID, api_hash=API_HASH, in_memory=True)
-        session_data['client'] = client
+        phone = request.form['phone']
+        LOGIN_SESSIONS[token]['phone'] = phone
+        client = Client(name=f"login_{token}", api_id=API_ID, api_hash=API_HASH, in_memory=True)
+        LOGIN_SESSIONS[token]['client'] = client
         
-        error_message = None
         try:
-            logger.info(f"Connecting client for user {user_id}...")
-            await asyncio.wait_for(client.connect(), timeout=20.0)
-            
-            logger.info(f"Client connected. Sending code to {phone} for user {user_id}.")
-            sent_code = await asyncio.wait_for(client.send_code(phone), timeout=20.0)
-            
-            logger.info(f"Code sent successfully to {phone} for user {user_id}.")
-            session_data['phone_code_hash'] = sent_code.phone_code_hash
-            session_data['step'] = 'awaiting_code'
-            
+            await client.connect()
+            sent_code = await client.send_code(phone)
+            LOGIN_SESSIONS[token]['phone_code_hash'] = sent_code.phone_code_hash
+            LOGIN_SESSIONS[token]['step'] = 'awaiting_code'
             form = f'<form method="post" action="/submit_code/{token}"><label for="code">کد تایید:</label><input type="text" id="code" name="code" required><button type="submit">تایید کد</button></form>'
-            return render_template_string(HTML_TEMPLATE, title="مرحله ۱: کد تایید", message=f"کدی که به تلگرام شما برای شماره {phone} ارسال شد را وارد کنید.", form_html=form)
-        
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout occurred during login process for user {user_id} with token {token}.")
-            error_message = "اتصال به سرورهای تلگرام بیش از حد طول کشید. این لینک منقضی شد. لطفاً به ربات برگردید و دوباره تلاش کنید."
+            return render_template_string(HTML_TEMPLATE, title="مرحله ۲: کد تایید", message=f"کدی که به تلگرام شما برای شماره {phone} ارسال شد را وارد کنید.", form_html=form)
         except Exception as e:
-            logger.error(f"Web login error (send_code) for user {user_id} with token {token}: {e}", exc_info=True)
-            error_message = f"در فرآیند ارسال کد خطایی رخ داد: ({type(e).__name__}). این لینک منقضی شد. لطفاً به ربات برگردید و دوباره تلاش کنید."
-
-        # This part runs ONLY if an exception was caught
-        if 'client' in session_data and session_data['client'] and session_data['client'].is_connected:
-            await session_data['client'].disconnect()
-        LOGIN_SESSIONS.pop(token, None) # Invalidate the token
-        return render_template_string(HTML_TEMPLATE, title="خطا در ارتباط", message="عملیات با مشکل مواجه شد.", error=error_message)
+            logger.error(f"Web login error (send_code) for {token}: {e}")
+            if client.is_connected: await client.disconnect()
+            LOGIN_SESSIONS.pop(token, None)
+            return render_template_string(HTML_TEMPLATE, title="خطا", message="خطایی در ارسال کد رخ داد.", error=str(e))
 
     if hasattr(web_app, 'loop') and web_app.loop.is_running():
         future = asyncio.run_coroutine_threadsafe(worker(), web_app.loop)
-        try:
-            return future.result(timeout=45) # Add a generous timeout
-        except Exception as e:
-            logger.error(f"Error getting result from Flask worker future: {e}")
-            return "خطای داخلی سرور هنگام پردازش درخواست.", 500
-    
-    logger.error("Main event loop is not available or not running for Flask handler.")
-    return "خطای داخلی سرور: حلقه رویداد در دسترس نیست.", 500
-
-
-async def activation_callback(context: ContextTypes.DEFAULT_TYPE):
-    user_id = context.job.data['user_id']
-    session_string = context.job.data['session_string']
-    await complete_self_pro_activation(user_id, session_string)
+        return future.result()
+    return "خطای سرور: حلقه رویداد در دسترس نیست.", 500
 
 @web_app.route('/submit_code/<token>', methods=['POST'])
-def submit_code(token):
+def login_web_submit_code(token):
     async def worker():
-        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') not in ['awaiting_code', 'awaiting_password']: 
-            return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه نامعتبر یا منقضی شده است.", error="لطفاً به ربات برگردید و دوباره تلاش کنید.")
-
+        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') != 'awaiting_code':
+            return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه نامعتبر یا منقضی شده است.")
+        
         code = request.form['code']
         session_data = LOGIN_SESSIONS[token]
         client = session_data['client']
         
         try:
-            await asyncio.wait_for(client.sign_in(session_data['phone'], session_data['phone_code_hash'], code), timeout=20.0)
-            
+            await client.sign_in(session_data['phone'], session_data['phone_code_hash'], code)
             session_string = await client.export_session_string()
-            user_id = session_data['user_id']
-            
-            application.job_queue.run_once(
-                activation_callback, when=0, 
-                data={'user_id': user_id, 'session_string': session_string}
-            )
-            
-            return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد. لطفاً به ربات در تلگرام برگردید. نتیجه نهایی آنجا به شما اعلام خواهد شد.")
-        
+            await client.disconnect()
+            LOGIN_SESSIONS.pop(token, None)
+            return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد.", session_string=session_string)
         except SessionPasswordNeeded:
-            session_data['step'] = 'awaiting_password'
+            LOGIN_SESSIONS[token]['step'] = 'awaiting_password'
             form = f'<form method="post" action="/submit_password/{token}"><label for="password">رمز تایید دو مرحله‌ای:</label><input type="password" id="password" name="password" required><button type="submit">تایید رمز</button></form>'
-            return render_template_string(HTML_TEMPLATE, title="مرحله ۲: تایید دو مرحله‌ای", message="حساب شما دارای رمز عبور است. آن را وارد کنید.", form_html=form)
-        
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout occurred during sign_in for token {token}.")
-            error_message = "تایید کد بیش از حد طول کشید. این لینک منقضی شد."
+            return render_template_string(HTML_TEMPLATE, title="مرحله ۳: تایید دو مرحله‌ای", message="حساب شما دارای رمز عبور است. آن را وارد کنید.", form_html=form)
         except Exception as e:
-            logger.error(f"Web login error (sign_in) for token {token}: {e}", exc_info=True)
-            error_message = "کد وارد شده اشتباه است یا خطای دیگری رخ داد. این لینک منقضی شد."
-
-        # Cleanup on error
-        if client.is_connected: await client.disconnect()
-        LOGIN_SESSIONS.pop(token, None)
-        return render_template_string(HTML_TEMPLATE, title="خطا", message="عملیات ناموفق بود.", error=error_message + " لطفاً به ربات برگردید و دوباره تلاش کنید.")
-        
+            logger.error(f"Web login error (sign_in) for {token}: {e}")
+            if client.is_connected: await client.disconnect()
+            # Reset session to allow user to restart from phone number entry
+            LOGIN_SESSIONS.pop(token, None) 
+            return render_template_string(HTML_TEMPLATE, title="خطا", message="کد وارد شده اشتباه بود یا منقضی شده است.", error="لطفا به ربات بازگردید و یک لینک جدید دریافت کنید.")
+    
     if hasattr(web_app, 'loop') and web_app.loop.is_running():
         future = asyncio.run_coroutine_threadsafe(worker(), web_app.loop)
-        try:
-            return future.result(timeout=30)
-        except Exception as e:
-            logger.error(f"Error getting result from Flask worker future: {e}")
-            return "خطای داخلی سرور هنگام پردازش درخواست.", 500
-    
-    logger.error("Main event loop is not available or not running for Flask handler.")
-    return "خطای داخلی سرور: حلقه رویداد در دسترس نیست.", 500
-
+        return future.result()
+    return "خطای سرور: حلقه رویداد در دسترس نیست.", 500
 
 @web_app.route('/submit_password/<token>', methods=['POST'])
-def submit_password(token):
+def login_web_submit_password(token):
     async def worker():
-        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') != 'awaiting_password': 
-            return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه نامعتبر یا منقضی شده است.", error="لطفاً به ربات برگردید و دوباره تلاش کنید.")
-            
-        password = request.form['password']
-        session_data = LOGIN_SESSIONS[token]
-        client = session_data['client']
-
-        try:
-            await asyncio.wait_for(client.check_password(password), timeout=20.0)
-
-            session_string = await client.export_session_string()
-            user_id = session_data['user_id']
-
-            application.job_queue.run_once(
-                activation_callback, when=0,
-                data={'user_id': user_id, 'session_string': session_string}
-            )
-            
-            return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد. لطفاً به ربات در تلگرام برگردید. نتیجه نهایی آنجا به شما اعلام خواهد شد.")
+        if token not in LOGIN_SESSIONS or LOGIN_SESSIONS[token].get('step') != 'awaiting_password':
+            return render_template_string(HTML_TEMPLATE, title="خطا", message="جلسه نامعتبر یا منقضی شده است.")
         
-        except asyncio.TimeoutError:
-            logger.error(f"Timeout occurred during check_password for token {token}.")
-            error_message = "تایید رمز بیش از حد طول کشید. این لینک منقضی شد."
+        password = request.form['password']
+        client = LOGIN_SESSIONS[token]['client']
+        
+        try:
+            await client.check_password(password)
+            session_string = await client.export_session_string()
+            await client.disconnect()
+            LOGIN_SESSIONS.pop(token, None)
+            return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد.", session_string=session_string)
         except Exception as e:
-            logger.error(f"Web login error (check_password) for token {token}: {e}", exc_info=True)
-            error_message = "رمز عبور وارد شده اشتباه بود. این لینک منقضی شد."
-
-        # Cleanup on error
-        if client.is_connected: await client.disconnect()
-        LOGIN_SESSIONS.pop(token, None)
-        return render_template_string(HTML_TEMPLATE, title="خطا", message="عملیات ناموفق بود.", error=error_message + " لطفاً به ربات برگردید و دوباره تلاش کنید.")
-
+            logger.error(f"Web login error (check_password) for {token}: {e}")
+            await client.disconnect()
+            LOGIN_SESSIONS.pop(token, None)
+            return render_template_string(HTML_TEMPLATE, title="خطا", message="رمز عبور اشتباه بود.", error="لطفا به ربات بازگردید و یک لینک جدید دریافت کنید.")
+            
     if hasattr(web_app, 'loop') and web_app.loop.is_running():
         future = asyncio.run_coroutine_threadsafe(worker(), web_app.loop)
-        try:
-            return future.result(timeout=30)
-        except Exception as e:
-            logger.error(f"Error getting result from Flask worker future: {e}")
-            return "خطای داخلی سرور هنگام پردازش درخواست.", 500
-    
-    logger.error("Main event loop is not available or not running for Flask handler.")
-    return "خطای داخلی سرور: حلقه رویداد در دسترس نیست.", 500
+        return future.result()
+    return "خطای سرور: حلقه رویداد در دسترس نیست.", 500
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1125,12 +1008,13 @@ def main_sync() -> None:
     application.add_error_handler(error_handler)
 
     self_pro_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex('^🚀 Self Pro$'), self_pro_start)],
+        entry_points=[MessageHandler(filters.Regex('^🚀 Self Pro$'), self_pro_menu_text_handler)],
         states={
-            AWAIT_CONTACT: [MessageHandler(filters.CONTACT, self_pro_receive_contact)],
+            AWAIT_SESSION_STRING: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_session_string)]
         },
         fallbacks=[CommandHandler("cancel", cancel)], persistent=False, name="self_pro_login_conversation"
     )
+    
     main_conv = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex('^💰 افزایش موجودی$'), buy_diamond_start_text),
