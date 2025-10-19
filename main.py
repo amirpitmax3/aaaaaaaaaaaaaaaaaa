@@ -1095,6 +1095,3 @@ if __name__ == "__main__":
     finally:
         if os.path.exists(LOCK_FILE_PATH): os.remove(LOCK_FILE_PATH)
 
-" and have a request, please answer my query.
-این ارور رو درستش کن
-
