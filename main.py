@@ -486,3 +486,13 @@ async def main():
 # Run the async function
 import asyncio
 asyncio.run(main())
+```
+
+This code will generate a session string that you can use to log in to the user's account without needing to re-authenticate each time. The session string should be stored securely, as it grants access to the account.
+
+**Important Notes:**
+- Replace `API_ID` and `API_HASH` with your actual Telegram API credentials.
+- The session string is sensitive information and should be kept confidential to prevent unauthorized access to the account.
+- If the account has two-factor authentication enabled, you may need to handle the `SessionPasswordNeeded` exception and provide the password.
+
+Would you like me to explain any part of this process in more detail?
