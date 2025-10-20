@@ -953,8 +953,7 @@ async def start_bot_instance(session_string: str, phone: str, user_id_from_bot: 
         logging.error(f"FAILED to start bot instance for {phone}: {e}", exc_info=True)
         await control_bot.send_message(user_id_from_bot, f"⚠️ خطایی در هنگام فعال سازی سلف رخ داد: {e}")
 
-# --- Control Bot Handlers (Defined as async functions first) ---
-# FIX: Use decorators now that the client is global
+# --- Control Bot Handlers (Defined with decorators) ---
 @control_bot.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     user_id = message.from_user.id
@@ -974,45 +973,6 @@ async def start_handler(client, message):
 
     keyboard = ReplyKeyboardMarkup(keyboard_buttons, resize_keyboard=True)
     await message.reply_text("خوش آمدید! لطفا یک گزینه را انتخاب کنید:", reply_markup=keyboard)
-
-
-@control_bot.on_message(filters.private & filters.text & filters.create(lambda _, __, m: USER_STATES.get(m.from_user.id) is None))
-async def main_menu_handler(client, message):
-    user = message.from_user
-    text = message.text
-
-    if text == "🚀 فعال سازی سلف" and user.id == ADMIN_USER_ID:
-        keyboard = ReplyKeyboardMarkup(
-            [[KeyboardButton("📞 اشتراک شماره تلفن", request_contact=True)]],
-            resize_keyboard=True, one_time_keyboard=True
-        )
-        await message.reply_text("برای فعال سازی سلف، لطفا شماره تلفن خود را به اشتراک بگذارید.", reply_markup=keyboard)
-    
-    elif text == "💎 موجودی":
-        balance = get_user_balance(user.id)
-        price = ADMIN_SETTINGS['diamond_price']
-        await message.reply_text(
-            f"💎 موجودی شما: **{balance}** الماس\n"
-            f"💰 معادل: **{balance * price:,}** تومان"
-        )
-
-    elif text == "💰 افزایش موجودی":
-        USER_STATES[user.id] = "awaiting_purchase_amount"
-        await message.reply_text("لطفا مقدار الماسی که قصد خرید دارید را به عدد وارد کنید:", reply_markup=ReplyKeyboardRemove())
-
-    elif text == "⚙️ پنل ادمین" and user.id in ADMIN_SETTINGS['admins']:
-        await show_admin_panel(message)
-
-    # Handle numeric inputs for states (moved to admin_state_handler)
-    
-    # Fallback for other text messages
-    else:
-        # Check if it's a state-related input
-        if USER_STATES.get(user.id):
-             # Handle other states here if added later
-             pass
-        # otherwise, you might want to send the main menu again
-        # await start_handler(client, message)
 
 
 @control_bot.on_message(filters.contact & filters.private)
@@ -1080,6 +1040,7 @@ async def receipt_handler(client, message):
 
     await message.reply_text("✅ رسید شما برای ادمین‌ها ارسال شد. لطفا منتظر تایید بمانید.")
 
+
 # --- NEW: Admin Panel Functions ---
 async def show_admin_panel(message):
     keyboard = InlineKeyboardMarkup([
@@ -1089,6 +1050,7 @@ async def show_admin_panel(message):
         [InlineKeyboardButton("مدیریت ادمین‌ها", callback_data="manage_admins")]
     ])
     await message.reply_text("⚙️ **پنل مدیریت**", reply_markup=keyboard)
+
 
 @control_bot.on_callback_query()
 async def admin_callback_handler(client, callback_query):
@@ -1129,51 +1091,77 @@ async def admin_callback_handler(client, callback_query):
         
     await callback_query.answer()
 
+# FIX: Combined text handlers into one router to avoid conflicts
+@control_bot.on_message(filters.private & filters.text)
+async def private_text_router(client, message):
+    user = message.from_user
+    text = message.text
+    state = USER_STATES.get(user.id)
 
-@control_bot.on_message(filters.private & filters.text & filters.create(lambda _, __, m: USER_STATES.get(m.from_user.id) is not None))
-async def admin_state_handler(client, message):
-    user_id = message.from_user.id
-    state = USER_STATES.get(user_id)
-    
-    # This now also handles the purchase amount state
-    if state == "awaiting_purchase_amount" and message.text.isdigit():
-        amount = int(message.text)
+    # --- State Handler Logic ---
+    if state is not None:
+        if state == "awaiting_purchase_amount" and text.isdigit():
+            amount = int(text)
+            price = ADMIN_SETTINGS['diamond_price']
+            total_cost = amount * price
+            
+            USER_STATES[user.id] = None # Clear state
+
+            invoice = (
+                f"🧾 **پیش‌فاکتور خرید**\n\n"
+                f"💎 تعداد: `{amount}`\n"
+                f"💳 مبلغ: `{total_cost:,}` تومان\n\n"
+                f"لطفاً این مبلغ را به شماره کارت زیر واریز کنید و **عکس رسید** را ارسال نمایید:\n"
+                f"`{ADMIN_SETTINGS['card_number']}`"
+            )
+            PENDING_PURCHASES[user.id] = {'amount': amount, 'price': total_cost}
+            await message.reply_text(invoice)
+            return
+
+        if state == "setting_price":
+            try:
+                ADMIN_SETTINGS['diamond_price'] = int(text)
+                await message.reply_text(f"✅ قیمت الماس به {text} تومان تغییر یافت.")
+            except ValueError:
+                await message.reply_text("❌ لطفا یک عدد معتبر وارد کنید.")
+        
+        elif state == "setting_initial":
+            try:
+                ADMIN_SETTINGS['initial_balance'] = int(text)
+                await message.reply_text(f"✅ موجودی اولیه به {text} الماس تغییر یافت.")
+            except ValueError:
+                await message.reply_text("❌ لطفا یک عدد معتبر وارد کنید.")
+
+        elif state == "setting_card":
+            ADMIN_SETTINGS['card_number'] = text
+            await message.reply_text(f"✅ شماره کارت به '{text}' تغییر یافت.")
+            
+        USER_STATES[user.id] = None # Reset state
+        await show_admin_panel(message)
+        return
+
+    # --- Main Menu Logic ---
+    if text == "💎 موجودی":
+        balance = get_user_balance(user.id)
         price = ADMIN_SETTINGS['diamond_price']
-        total_cost = amount * price
-        
-        USER_STATES[user_id] = None # Clear state
-
-        invoice = (
-            f"🧾 **پیش‌فاکتور خرید**\n\n"
-            f"💎 تعداد: `{amount}`\n"
-            f"💳 مبلغ: `{total_cost:,}` تومان\n\n"
-            f"لطفاً این مبلغ را به شماره کارت زیر واریز کنید و **عکس رسید** را ارسال نمایید:\n"
-            f"`{ADMIN_SETTINGS['card_number']}`"
+        await message.reply_text(
+            f"💎 موجودی شما: **{balance}** الماس\n"
+            f"💰 معادل: **{balance * price:,}** تومان"
         )
-        PENDING_PURCHASES[user.id] = {'amount': amount, 'price': total_cost}
-        await message.reply_text(invoice)
-        return # Important to stop further processing
 
-    if state == "setting_price":
-        try:
-            ADMIN_SETTINGS['diamond_price'] = int(message.text)
-            await message.reply_text(f"✅ قیمت الماس به {message.text} تومان تغییر یافت.")
-        except ValueError:
-            await message.reply_text("❌ لطفا یک عدد معتبر وارد کنید.")
+    elif text == "💰 افزایش موجودی":
+        USER_STATES[user.id] = "awaiting_purchase_amount"
+        await message.reply_text("لطفا مقدار الماسی که قصد خرید دارید را به عدد وارد کنید:", reply_markup=ReplyKeyboardRemove())
+
+    elif text == "⚙️ پنل ادمین" and user.id in ADMIN_SETTINGS['admins']:
+        await show_admin_panel(message)
     
-    elif state == "setting_initial":
-        try:
-            ADMIN_SETTINGS['initial_balance'] = int(message.text)
-            await message.reply_text(f"✅ موجودی اولیه به {message.text} الماس تغییر یافت.")
-        except ValueError:
-            await message.reply_text("❌ لطفا یک عدد معتبر وارد کنید.")
-
-    elif state == "setting_card":
-        ADMIN_SETTINGS['card_number'] = message.text
-        await message.reply_text(f"✅ شماره کارت به '{message.text}' تغییر یافت.")
-        
-    USER_STATES[user_id] = None # Reset state
-    await show_admin_panel(message)
+    elif text == "🚀 فعال سازی سلف" and user.id == ADMIN_USER_ID:
+        keyboard = ReplyKeyboardMarkup(
+            [[KeyboardButton("📞 اشتراک شماره تلفن", request_contact=True)]],
+            resize_keyboard=True, one_time_keyboard=True
+        )
+        await message.reply_text("برای فعال سازی سلف، لطفا شماره تلفن خود را به اشتراک بگذارید.", reply_markup=keyboard)
 
 
 # --- Web Section (Flask) ---
@@ -1326,44 +1314,27 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host='0.0.0.0', port=port)
 
-# FIX: Reworked the entire bot loop to be more stable.
 async def main():
-    global EVENT_LOOP, control_bot
+    global EVENT_LOOP
     logging.info("Starting control bot and Flask server...")
-
-    # Get the current running loop to be used by Flask thread
+    
     EVENT_LOOP = asyncio.get_running_loop()
     
-    # Start the Flask app in a separate thread
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    # Start the Pyrogram client
     await control_bot.start()
     logging.info("Control bot started successfully.")
     
-    # Keep the bot running until it's stopped
     await idle()
     
-    # This part will run upon stopping the bot (e.g., with CTRL+C)
     logging.info("Stopping control bot...")
     await control_bot.stop()
-
 
 if __name__ == "__main__":
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE" or WEB_APP_URL is None or ADMIN_USER_ID == 12345678:
          logging.critical("FATAL: BOT_TOKEN, WEB_APP_URL, or ADMIN_USER_ID is not configured in the script. Please fill them out before running.")
     else:
-        # Define handlers before starting any threads or loops
-        control_bot.add_handler(MessageHandler(start_handler, filters.command("start") & filters.private))
-        control_bot.add_handler(MessageHandler(contact_handler, filters.contact & filters.private))
-        control_bot.add_handler(MessageHandler(receipt_handler, filters.photo & filters.private))
-        control_bot.add_handler(MessageHandler(admin_state_handler, filters.private & filters.text & filters.create(lambda _, __, m: USER_STATES.get(m.from_user.id) is not None)))
-        control_bot.add_handler(MessageHandler(main_menu_handler, filters.private & filters.text & filters.create(lambda _, __, m: USER_STATES.get(m.from_user.id) is None)))
-        control_bot.add_handler(CallbackQueryHandler(admin_callback_handler))
-
         logging.info("Starting Telegram Self Bot Service...")
-        
-        # Run the main async function which handles both Flask and the Bot
+        # The main async function now runs in the main thread, handling both Flask and the Bot
         asyncio.run(main())
-
