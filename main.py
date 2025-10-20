@@ -1112,7 +1112,7 @@ async def private_text_router(client, message):
             price = ADMIN_SETTINGS['diamond_price']
             total_cost = amount * price
             
-            USER_STATES[user_id] = None # Clear state
+            USER_STATES[user.id] = None # Clear state
 
             invoice = (
                 f"🧾 **پیش‌فاکتور خرید**\n\n"
@@ -1346,4 +1346,5 @@ if __name__ == "__main__":
             asyncio.run(main())
         except (KeyboardInterrupt, SystemExit):
             logging.info("Service stopped.")
+" and fix this.
 
