@@ -18,8 +18,6 @@ from pyrogram.errors import (
     PasswordHashInvalid, PhoneNumberInvalid, PhoneCodeExpired, UserDeactivated, AuthKeyUnregistered,
     ReactionInvalid
 )
-# pyrogram.raw is not directly used in this version.
-# from pyrogram.raw import functions
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from flask import Flask, request, render_template_string, redirect, session, url_for
@@ -56,7 +54,8 @@ logging.warning("MongoDB connection is disabled. All data will be lost on restar
 TEHRAN_TIMEZONE = ZoneInfo("Asia/Tehran")
 app_flask = Flask(__name__)
 app_flask.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24))
-control_bot = Client("control_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# The Client is initialized later in the main_bot_loop to attach it to the correct event loop
+control_bot = None
 
 # Stores temporary login tokens {token: {'user_id': 123, 'phone_number': '+98...', 'timestamp': 1234}}
 PENDING_LOGINS = {}
@@ -182,8 +181,7 @@ PV_LOCK_STATUS = {}
 
 ACTIVE_CLIENTS = {}
 ACTIVE_BOTS = {}
-# Create a new event loop that will be used by the bot thread
-EVENT_LOOP = asyncio.new_event_loop()
+EVENT_LOOP = None # Will be initialized in the thread
 
 
 # --- NEW: Helper functions for economy ---
@@ -1329,9 +1327,13 @@ def run_flask():
     app_flask.run(host='0.0.0.0', port=port)
 
 def run_asyncio_loop():
+    global EVENT_LOOP, control_bot
+    EVENT_LOOP = asyncio.new_event_loop()
     asyncio.set_event_loop(EVENT_LOOP)
-    logging.info("Setting up control bot...")
     
+    control_bot = Client("control_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+    logging.info("Setting up control bot...")
     # Add all handlers to the bot before starting
     control_bot.add_handler(MessageHandler(start_handler, filters.command("start") & filters.private))
     control_bot.add_handler(MessageHandler(contact_handler, filters.contact & filters.private))
@@ -1343,16 +1345,15 @@ def run_asyncio_loop():
 
     try:
         logging.info("Starting control bot...")
-        EVENT_LOOP.run_until_complete(control_bot.start())
-        logging.info("Control bot started. Running event loop forever.")
-        EVENT_LOOP.run_forever()
+        control_bot.run()
+
     except (KeyboardInterrupt, SystemExit):
         logging.info("Event loop stopped by user.")
     finally:
-        logging.info("Stopping control bot and closing loop.")
+        logging.info("Stopping control bot.")
+        if control_bot.is_initialized:
+            EVENT_LOOP.run_until_complete(control_bot.stop())
         if EVENT_LOOP.is_running():
-            if control_bot.is_initialized:
-                EVENT_LOOP.run_until_complete(control_bot.stop())
             EVENT_LOOP.close()
 
 
