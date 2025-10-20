@@ -11,7 +11,6 @@ import math
 import re
 import sys
 import atexit
-from functools import wraps
 import time
 import traceback
 import html
@@ -67,34 +66,42 @@ logger = logging.getLogger(__name__)
 
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if isinstance(context.error, Conflict):
-        logger.warning("Conflict error detected. Requesting application stop.")
-        # Safely stop the application only if it's running
-        try:
-            if context.application.running:
-                await context.application.stop()
-        except RuntimeError as e:
-            # This can happen in a race condition, it's safe to ignore.
-            logger.warning(f"Ignoring error during stop: {e}")
-        return
+    """لاگ کردن خطا و مدیریت خطای Conflict به صورت خاص"""
+    error = context.error
     
-    logger.error(f"Exception while handling an update:", exc_info=context.error)
-    
+    # مدیریت خطای Conflict که هنگام اجرای همزمان چند نمونه از ربات رخ می‌دهد
+    if isinstance(error, Conflict):
+        logger.warning(
+            "Conflict error: Another instance of the bot is already running. "
+            "This is common during restarts on hosting platforms. The bot will attempt to shut down."
+        )
+        # یک فلگ برای شناسایی دلیل خاموش شدن در بخش finally تنظیم می‌شود
+        context.bot_data['conflict_shutdown'] = True
+        
+        # درخواست توقف اپلیکیشن. این کار باعث می‌شود run_polling از حالت بلاک خارج شود.
+        if context.application.running:
+            await context.application.stop()
+        return  # توقف پردازش بیشتر برای این خطا
+
+    # لاگ کردن تمام خطاهای دیگر
+    logger.error("Exception while handling an update:", exc_info=error)
 
 
 # --- بخش وب سرور برای Ping و لاگین ---
 web_app = Flask(__name__)
 WEB_APP_URL = os.environ.get("RENDER_EXTERNAL_URL", "http://127.0.0.1:10000") 
 LOGIN_SESSIONS = {}
-application = None # Define application globally so Flask routes can access job_queue
-session_lock = Lock() # Add a lock for thread-safe session manipulation
+application = None # تعریف گلوبال اپلیکیشن برای دسترسی در روت‌های فلسک
+session_lock = Lock() # قفل برای مدیریت thread-safe سشن‌ها
 
 
 # --- متغیرهای ربات ---
-TELEGRAM_TOKEN = "8233582209:AAHKPQX-349tAfBOCFWbRRqcpD-QbVrDzQ0"
-API_ID = 29645784
-API_HASH = "19e8465032deba8145d40fc4beb91744"
-OWNER_ID = 7423552124 # ادمین اصلی
+# !! مهم: اطلاعات حساس مانند توکن را هرگز در کد قرار ندهید.
+# این مقادیر باید از طریق متغیرهای محیطی (Environment Variables) در هاست شما (Render) تنظیم شوند.
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN_HERE")
+API_ID = int(os.environ.get("API_ID", "0")) # یک مقدار پیش‌فرض عددی قرار دهید
+API_HASH = os.environ.get("API_HASH", "YOUR_API_HASH_HERE")
+OWNER_ID = int(os.environ.get("OWNER_ID", "0")) # یک مقدار پیش‌فرض عددی قرار دهید
 TEHRAN_TIMEZONE = ZoneInfo("Asia/Tehran")
 
 
@@ -111,7 +118,7 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     SETTING_SELF_COST, SETTING_CHANNEL_LINK, SETTING_REFERRAL_REWARD,
     SETTING_PAYMENT_CARD, SETTING_CARD_HOLDER,
     AWAITING_SUPPORT_MESSAGE, AWAITING_ADMIN_REPLY,
-    AWAIT_CONTACT, AWAIT_SESSION_STRING, # AWAIT_SESSION_STRING is no longer used in conversation but kept for range
+    AWAIT_CONTACT, AWAIT_SESSION_STRING,
     ADMIN_ADD, ADMIN_REMOVE
 ) = range(16)
 
@@ -119,7 +126,7 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 # --- استایل‌های فونت ---
 FONT_STYLES = {
     'normal': "0123456789", 'monospace': "🟶🟷🟸🟹🟺🟻🟼🟽🟾🟿",
-    'doublestruck': "𝟘𝟙𚼉🛩𝟜𝟝𝟞𝟟𝟠𝟡", 'stylized': "𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫",
+    'doublestruck': "𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡", 'stylized': "𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫",
     'cursive': "𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
 }
 
@@ -129,7 +136,7 @@ def stylize_time(time_str: str, style: str) -> str:
 
 # --- متغیرهای قابلیت‌های جدید ---
 ENEMY_REPLIES = [
-  "کیرم تو رحم اجاره ای و خونی مالی مادرت", "دو میلیون شبی پول ویلا بدم تا مادرتو تو گوشه کناراش بگام و اب کوسشو بریزم کف خونه تا فردا صبح کارگرای افغانی برای نظافت اومدن با بوی اب کس مادرت بجقن و ابکیراشون نثار قبر مرده هات بشه", "احمق مادر کونی من کس مادرت گذاشتم تو بازم داری کسشر میگی", "هی بیناموس کیرم بره تو کس ننت واس بابات نشآخ مادر کیری کیرم بره تو کس اجدادت کسکش بیناموس کس ول نسل شوتی ابجی کسده کیرم تو کس مادرت بیناموس کیری کیرم تو کس نسلت ابجی کونی کس نسل سگ ممبر کونی ابجی سگ ممبر سگ کونی کیرم تو کس ننت کیر تو کس مادرت کیر خاندان  تو کس نسلت مادر کونی ابجی کونی کیری ناموس ابجیتو گاییدم سگ حرومی خارکسه مادر کیری با کیر بزنم تو رحم مادرت ناموستو بگام لاشی کونی ابجی کس  خیابونی مادرخونی ننت کیرمو میماله تو میای کص میگی شاخ نشو ییا ببین شاخو کردم تو کون ابجی جندت کس ابجیتو پاره کردم تو شاخ میشی اوبی",
+    "کیرم تو رحم اجاره ای و خونی مالی مادرت", "دو میلیون شبی پول ویلا بدم تا مادرتو تو گوشه کناراش بگام و اب کوسشو بریزم کف خونه تا فردا صبح کارگرای افغانی برای نظافت اومدن با بوی اب کس مادرت بجقن و ابکیراشون نثار قبر مرده هات بشه", "احمق مادر کونی من کس مادرت گذاشتم تو بازم داری کسشر میگی", "هی بیناموس کیرم بره تو کس ننت واس بابات نشآخ مادر کیری کیرم بره تو کس اجدادت کسکش بیناموس کس ول نسل شوتی ابجی کسده کیرم تو کس مادرت بیناموس کیری کیرم تو کس نسلت ابجی کونی کس نسل سگ ممبر کونی ابجی سگ ممبر سگ کونی کیرم تو کس ننت کیر تو کس مادرت کیر خاندان  تو کس نسلت مادر کونی ابجی کونی کیری ناموس ابجیتو گاییدم سگ حرومی خارکسه مادر کیری با کیر بزنم تو رحم مادرت ناموستو بگام لاشی کونی ابجی کس  خیابونی مادرخونی ننت کیرمو میماله تو میای کص میگی شاخ نشو ییا ببین شاخو کردم تو کون ابجی جندت کس ابجیتو پاره کردم تو شاخ میشی اوبی",
 ]
 OFFLINE_REPLY_MESSAGE = "سلام! در حال حاضر آفلاین هستم و پیام شما را دریافت کردم. در اولین فرصت پاسخ خواهم داد. ممنون از پیامتون."
 ACTIVE_ENEMIES = {}
@@ -176,9 +183,12 @@ def setup_database():
     }
     for key, value in default_settings.items():
         cur.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
-    cur.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (OWNER_ID,))
-    cur.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (OWNER_ID,))
-    cur.execute("UPDATE users SET balance = 5000000 WHERE user_id = ?", (OWNER_ID,))
+    
+    if OWNER_ID != 0:
+        cur.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (OWNER_ID,))
+        cur.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (OWNER_ID,))
+        cur.execute("UPDATE users SET balance = 5000000 WHERE user_id = ?", (OWNER_ID,))
+    
     con.commit()
     con.close()
     logger.info("Database setup complete.")
@@ -446,11 +456,12 @@ async def self_pro_background_task(user_id: int, client: Client, application: Ap
                 styled_time = stylize_time(now_str, user['font_style'])
                 try: 
                     current_name = user['base_first_name']
-                    cleaned_name = re.sub(r'\s[\d🟶🟷🟸🟹🟺🟻🟼🟽🟾🟿𝟘𝟙𚼉🛩𝟜𝟝𝟞𝟟𝟠𝟡𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗]{1,2}:[\d🟶🟷🟸🟹🟺🟻🟼🟽🟾🟿𝟘𝟙𚼉🛩𝟜𝟝𝟞𝟟𝟠𝟡𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗]{2}$', '', current_name).strip()
+                    # A regex to remove previous times from the name
+                    cleaned_name = re.sub(r'\s[\d:🟶🟷🟸🟹🟺🟻🟼🟽🟾🟿𝟘𝟙𝟚𝟛𝟜𝟝𝟞𝟟𝟠𝟡𝟢𝟣𝟤𝟥𝟦𝟧𝟨𝟩𝟪𝟫𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗]+$', '', current_name).strip()
                     await client.update_profile(first_name=f"{cleaned_name} {styled_time}")
                 except FloodWait as e:
                     logger.warning(f"FloodWait for {user_id}: sleeping for {e.value} seconds.")
-                    await asyncio.sleep(e.value)
+                    await asyncio.sleep(e.value + 2) # Add 2 extra seconds
                 except Exception as e: logger.error(f"Failed to update profile for {user_id}: {e}")
             await asyncio.sleep(60)
     except Exception as e: logger.error(f"Critical error in self_pro_background_task for {user_id}: {e}", exc_info=True)
@@ -468,16 +479,17 @@ async def deactivate_self_pro(user_id: int, client: Client, application: Applica
 
 async def clean_up_user_session(user_id: int):
     client = user_sessions.pop(user_id, None)
-    if client and client.is_connected:
+    if client:
         try:
-            user_data = get_user(user_id)
-            if user_data and user_data['base_first_name']:
-                 await client.update_profile(first_name=user_data['base_first_name'], last_name=user_data['base_last_name'] or "")
+            if client.is_connected:
+                user_data = get_user(user_id)
+                if user_data and user_data['base_first_name']:
+                    await client.update_profile(first_name=user_data['base_first_name'], last_name=user_data['base_last_name'] or "")
+                await client.stop()
         except Exception as e:
-            logger.error(f"Could not restore name for user {user_id} on cleanup: {e}")
-        finally:
-             await client.stop()
-
+            logger.error(f"Could not restore name or stop client for user {user_id} on cleanup: {e}")
+    
+    # پاک کردن داده‌های مربوط به قابلیت‌های جدید
     ACTIVE_ENEMIES.pop(user_id, None)
     ENEMY_REPLY_QUEUES.pop(user_id, None)
     OFFLINE_MODE_STATUS.pop(user_id, None)
@@ -488,8 +500,10 @@ async def clean_up_user_session(user_id: int):
 async def reactivate_self_pro(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    update.effective_message.text = "🚀 Self Pro"
-    await self_pro_start(update.effective_message, context)
+    # Mocking a message update to re-trigger the conversation
+    message = query.message
+    message.text = "🚀 Self Pro"
+    await self_pro_start(message, context)
 
 
 # --- هندلرهای قابلیت‌های جدید ---
@@ -498,7 +512,7 @@ async def enemy_handler(client, message):
     if not ACTIVE_ENEMIES.get(user_id): return
     enemy_list = ACTIVE_ENEMIES.get(user_id, set())
     if message.from_user and (message.from_user.id, message.chat.id) in enemy_list:
-        if not ENEMY_REPLY_QUEUES.get(user_id):
+        if not ENEMY_REPLY_QUEUES.get(user_id) or len(ENEMY_REPLY_QUEUES[user_id]) == 0:
             ENEMY_REPLY_QUEUES[user_id] = random.sample(ENEMY_REPLIES, len(ENEMY_REPLIES))
         reply_text = ENEMY_REPLY_QUEUES[user_id].pop(0)
         try: await message.reply_text(reply_text)
@@ -514,7 +528,7 @@ async def enemy_controller(client, message):
         await message.edit_text(f"✅ **حالت دشمن برای {target_user.first_name} در این چت فعال شد.**")
     elif command == "دشمن خاموش":
         ACTIVE_ENEMIES[user_id].discard((target_user.id, chat_id))
-        await message.edit_text(f"❌ **حalt دشمن برای {target_user.first_name} در این چت خاموش شد.**")
+        await message.edit_text(f"❌ **حالت دشمن برای {target_user.first_name} در این چت خاموش شد.**")
 
 async def offline_mode_controller(client, message):
     user_id = client.me.id
@@ -547,6 +561,7 @@ async def delete_self_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def delete_self_final(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
+    await query.edit_message_text("در حال حذف سلف و بازگردانی نام شما...")
     await clean_up_user_session(user_id)
     update_user_db(user_id, 'self_active', False)
     update_user_db(user_id, 'self_paused', False)
@@ -642,7 +657,10 @@ async def end_bet_on_timeout(context: ContextTypes.DEFAULT_TYPE):
         update_user_balance(p_id, bet_info['amount'], add=True)
         if 'users_in_bet' in chat_data: chat_data['users_in_bet'].discard(p_id)
     if 'bets' in chat_data: chat_data['bets'].pop(job_data['message_id'], None)
-    await context.bot.edit_message_text(chat_id=job_data['chat_id'], message_id=job_data['message_id'], text="⌛️ زمان شرط‌بندی تمام شد و مبلغ بازگردانده شد.")
+    try:
+        await context.bot.edit_message_text(chat_id=job_data['chat_id'], message_id=job_data['message_id'], text="⌛️ زمان شرط‌بندی تمام شد و مبلغ بازگردانده شد.")
+    except Exception as e:
+        logger.warning(f"Could not edit timed-out bet message: {e}")
 
 @channel_membership_required
 async def start_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -859,10 +877,11 @@ async def toggle_channel_lock(update: Update, context: ContextTypes.DEFAULT_TYPE
     update_setting("mandatory_channel_enabled", new_state)
     await query.answer(f"قفل کانال {'فعال' if new_state == 'true' else 'غیرفعال'} شد.")
     await query.message.delete()
-    mock_update = Update(update.update_id, message=query.message)
-    mock_update.effective_user = query.from_user
-    
-    await admin_panel_entry_text(mock_update, context)
+    # Mock an update to re-enter the admin panel
+    message = query.message
+    message.from_user = query.from_user
+    message.text = "👑 پنل ادمین"
+    await admin_panel_entry_text(message, context)
     return ADMIN_PANEL_MAIN
     
 async def support_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1163,38 +1182,44 @@ def main_sync() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, group_text_handler))
     
     logger.info("Bot is initializing...")
-    # The application is returned to be run by the main async context
     return application
 
 
 if __name__ == "__main__":
     if os.path.exists(LOCK_FILE_PATH): 
-        logger.critical(f"Lock file exists. Exiting.")
-        sys.exit(0)
-    
+        logger.critical(f"Lock file {LOCK_FILE_PATH} exists. Another process might be running. Exiting.")
+        sys.exit(1)
+
+    app = None
+    loop = asyncio.get_event_loop()
+
     try:
-        with open(LOCK_FILE_PATH, "w") as f: f.write(str(os.getpid()))
+        with open(LOCK_FILE_PATH, "w") as f:
+            f.write(str(os.getpid()))
+        # اطمینان از حذف فایل قفل هنگام خروج
         atexit.register(lambda: os.path.exists(LOCK_FILE_PATH) and os.remove(LOCK_FILE_PATH))
         
-        # Build the application
+        # ساخت اپلیکیشن
         app = main_sync()
         
-        # Get the event loop that PTB will use
-        loop = asyncio.get_event_loop()
-        web_app.loop = loop # Make it accessible to the Flask thread
-        
+        # آماده‌سازی و اجرای وب سرور فلسک در یک ترد جدا
+        web_app.loop = loop # در دسترس قرار دادن لوپ برای ترد فلسک
         flask_thread = Thread(target=lambda: web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))))
         flask_thread.daemon = True
         flask_thread.start()
         
-        # Run the bot on the event loop
+        # اجرای ربات
         logger.info("Bot is starting polling...")
         loop.run_until_complete(app.run_polling(drop_pending_updates=True))
 
     except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped manually or due to conflict.")
+        logger.info("Bot shutdown requested (KeyboardInterrupt/SystemExit).")
+    except Exception as e:
+        logger.critical(f"An unhandled exception occurred in the main execution block: {e}", exc_info=True)
     finally:
-        # Gracefully stop all running user sessions before closing the loop
+        logger.info("Starting shutdown procedure...")
+        
+        # توقف و پاک‌سازی تمام سشن‌های فعال کاربران
         if user_sessions:
             logger.info("Cleaning up active user sessions...")
             cleanup_tasks = [clean_up_user_session(user_id) for user_id in list(user_sessions.keys())]
@@ -1202,10 +1227,17 @@ if __name__ == "__main__":
                 loop.run_until_complete(asyncio.gather(*cleanup_tasks))
             logger.info("All user sessions cleaned up.")
 
-        if os.path.exists(LOCK_FILE_PATH): 
+        # بخش کلیدی: اگر خاموش شدن به دلیل خطای Conflict بود، قبل از خروج صبر کن
+        if app and app.bot_data.get('conflict_shutdown'):
+            logger.warning("Conflict-driven shutdown. Waiting 15 seconds before exiting to allow Telegram API to release the session.")
+            time.sleep(15)
+
+        # پاک‌سازی نهایی
+        if os.path.exists(LOCK_FILE_PATH):
             os.remove(LOCK_FILE_PATH)
         
-        if not loop.is_closed():
+        if loop and not loop.is_closed():
             logger.info("Closing the event loop.")
             loop.close()
-
+        
+        logger.info("Shutdown complete.")
