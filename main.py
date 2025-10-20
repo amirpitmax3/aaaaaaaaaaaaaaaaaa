@@ -954,6 +954,8 @@ async def start_bot_instance(session_string: str, phone: str, user_id_from_bot: 
         await control_bot.send_message(user_id_from_bot, f"⚠️ خطایی در هنگام فعال سازی سلف رخ داد: {e}")
 
 # --- Control Bot Handlers (Defined as async functions first) ---
+# FIX: Use decorators now that the client is global
+@control_bot.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     user_id = message.from_user.id
 
@@ -974,6 +976,7 @@ async def start_handler(client, message):
     await message.reply_text("خوش آمدید! لطفا یک گزینه را انتخاب کنید:", reply_markup=keyboard)
 
 
+@control_bot.on_message(filters.private & filters.text & filters.create(lambda _, __, m: USER_STATES.get(m.from_user.id) is None))
 async def main_menu_handler(client, message):
     user = message.from_user
     text = message.text
@@ -1000,24 +1003,8 @@ async def main_menu_handler(client, message):
     elif text == "⚙️ پنل ادمین" and user.id in ADMIN_SETTINGS['admins']:
         await show_admin_panel(message)
 
-    # Handle numeric inputs for states
-    elif text.isdigit() and USER_STATES.get(user.id) == "awaiting_purchase_amount":
-        amount = int(text)
-        price = ADMIN_SETTINGS['diamond_price']
-        total_cost = amount * price
-        
-        USER_STATES[user.id] = None # Clear state
-
-        invoice = (
-            f"🧾 **پیش‌فاکتور خرید**\n\n"
-            f"💎 تعداد: `{amount}`\n"
-            f"💳 مبلغ: `{total_cost:,}` تومان\n\n"
-            f"لطفاً این مبلغ را به شماره کارت زیر واریز کنید و **عکس رسید** را ارسال نمایید:\n"
-            f"`{ADMIN_SETTINGS['card_number']}`"
-        )
-        PENDING_PURCHASES[user.id] = {'amount': amount, 'price': total_cost}
-        await message.reply_text(invoice)
-
+    # Handle numeric inputs for states (moved to admin_state_handler)
+    
     # Fallback for other text messages
     else:
         # Check if it's a state-related input
@@ -1028,6 +1015,7 @@ async def main_menu_handler(client, message):
         # await start_handler(client, message)
 
 
+@control_bot.on_message(filters.contact & filters.private)
 async def contact_handler(client, message):
     user = message.from_user
     contact = message.contact
@@ -1060,6 +1048,7 @@ async def contact_handler(client, message):
         reply_markup=ReplyKeyboardRemove()
     )
 
+@control_bot.on_message(filters.photo & filters.private)
 async def receipt_handler(client, message):
     user = message.from_user
     purchase_info = PENDING_PURCHASES.pop(user.id, None)
@@ -1082,7 +1071,6 @@ async def receipt_handler(client, message):
         ]
     ])
     
-    sent_messages = []
     for admin_id in ADMIN_SETTINGS['admins']:
         try:
             sent_msg = await message.forward(admin_id)
@@ -1102,6 +1090,7 @@ async def show_admin_panel(message):
     ])
     await message.reply_text("⚙️ **پنل مدیریت**", reply_markup=keyboard)
 
+@control_bot.on_callback_query()
 async def admin_callback_handler(client, callback_query):
     user_id = callback_query.from_user.id
     data = callback_query.data
@@ -1141,12 +1130,29 @@ async def admin_callback_handler(client, callback_query):
     await callback_query.answer()
 
 
+@control_bot.on_message(filters.private & filters.text & filters.create(lambda _, __, m: USER_STATES.get(m.from_user.id) is not None))
 async def admin_state_handler(client, message):
     user_id = message.from_user.id
     state = USER_STATES.get(user_id)
-    if not state:
-        # Let the main_menu_handler take care of it
-        return await main_menu_handler(client, message)
+    
+    # This now also handles the purchase amount state
+    if state == "awaiting_purchase_amount" and message.text.isdigit():
+        amount = int(message.text)
+        price = ADMIN_SETTINGS['diamond_price']
+        total_cost = amount * price
+        
+        USER_STATES[user_id] = None # Clear state
+
+        invoice = (
+            f"🧾 **پیش‌فاکتور خرید**\n\n"
+            f"💎 تعداد: `{amount}`\n"
+            f"💳 مبلغ: `{total_cost:,}` تومان\n\n"
+            f"لطفاً این مبلغ را به شماره کارت زیر واریز کنید و **عکس رسید** را ارسال نمایید:\n"
+            f"`{ADMIN_SETTINGS['card_number']}`"
+        )
+        PENDING_PURCHASES[user_id] = {'amount': amount, 'price': total_cost}
+        await message.reply_text(invoice)
+        return # Important to stop further processing
 
     if state == "setting_price":
         try:
@@ -1330,35 +1336,30 @@ def run_asyncio_loop():
         logging.info("Starting and running control bot...")
         # Pyrogram's run() method handles the loop and signal issues internally
         # when it's the main entry point for asyncio.
-        control_bot.run(main())
+        # This will block until the bot is stopped.
+        control_bot.run()
     except (KeyboardInterrupt, SystemExit):
         logging.info("Bot loop stopped.")
 
-async def main():
-    global control_bot
-    logging.info("Setting up control bot handlers...")
-    
-    # Add all handlers to the bot instance
-    control_bot.add_handler(MessageHandler(start_handler, filters.command("start") & filters.private))
-    control_bot.add_handler(MessageHandler(contact_handler, filters.contact & filters.private))
-    control_bot.add_handler(MessageHandler(receipt_handler, filters.photo & filters.private))
-    control_bot.add_handler(MessageHandler(admin_state_handler, filters.private & filters.text & filters.create(lambda _, __, m: USER_STATES.get(m.from_user.id) is not None)))
-    control_bot.add_handler(MessageHandler(main_menu_handler, filters.private & filters.text))
-    control_bot.add_handler(CallbackQueryHandler(admin_callback_handler))
-
-    logging.info("Control bot handlers set up.")
-    # No need to run forever here, `run()` will handle it.
 
 if __name__ == "__main__":
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE" or WEB_APP_URL is None or ADMIN_USER_ID == 12345678:
          logging.critical("FATAL: BOT_TOKEN, WEB_APP_URL, or ADMIN_USER_ID is not configured in the script. Please fill them out before running.")
     else:
+        # Define handlers before starting any threads
+        control_bot.add_handler(MessageHandler(start_handler, filters.command("start") & filters.private))
+        control_bot.add_handler(MessageHandler(contact_handler, filters.contact & filters.private))
+        control_bot.add_handler(MessageHandler(receipt_handler, filters.photo & filters.private))
+        control_bot.add_handler(MessageHandler(admin_state_handler, filters.private & filters.text & filters.create(lambda _, __, m: USER_STATES.get(m.from_user.id) is not None)))
+        control_bot.add_handler(MessageHandler(main_menu_handler, filters.private & filters.text & filters.create(lambda _, __, m: USER_STATES.get(m.from_user.id) is None)))
+        control_bot.add_handler(CallbackQueryHandler(admin_callback_handler))
+
         logging.info("Starting Telegram Self Bot Service...")
-        # The bot loop now runs in the main thread to avoid signal errors
-        # The web server runs in a secondary thread
-        flask_thread = Thread(target=run_flask, daemon=True)
-        flask_thread.start()
         
-        # This will block the main thread and run the bot
-        run_asyncio_loop()
+        # The bot loop now runs in its own thread
+        bot_thread = Thread(target=run_asyncio_loop, daemon=True)
+        bot_thread.start()
+
+        # The Flask app runs in the main thread
+        run_flask()
 
