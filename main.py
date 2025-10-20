@@ -79,7 +79,7 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # --- بخش وب سرور برای Ping و لاگین ---
 web_app = Flask(__name__)
-WEB_APP_URL = os.environ.get("RENDER_EXTERNAL_URL", "http://127.0.0.1:10000") 
+WEB_APP_URL = os.environ.get("RENDER_EXTERNAL_URL", "http://1227.0.0.1:10000") 
 LOGIN_SESSIONS = {}
 
 # --- متغیرهای ربات ---
@@ -131,6 +131,7 @@ USERS_REPLIED_IN_OFFLINE = {}
 AUTO_SEEN_STATUS = {}
 AUTO_BOLD_STATUS = {}
 AUTO_REACTION_STATUS = {}
+ACTIVE_BETS = {} # برای ذخیره شرط‌های فعال
 
 
 # --- مدیریت دیتابیس (SQLite) ---
@@ -1048,6 +1049,150 @@ async def referral_menu_text_handler(update: Update, context: ContextTypes.DEFAU
     text = (f"🔗 لینک دعوت شما:\n`{referral_link}`\n\nبا هر دعوت موفق {reward} الماس هدیه بگیرید.")
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
+# --- Group Features (Transfer, Bet) ---
+
+async def group_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text: return
+    text = update.message.text.strip()
+    if text == 'موجودی':
+        user = get_user(update.effective_user.id)
+        await update.message.reply_text(f"💎 موجودی شما: {user['balance']} الماس")
+
+async def handle_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message: return
+    match = re.search(r'(\d+)', update.message.text)
+    if not match: return
+
+    try: amount = int(match.group(1))
+    except (ValueError, TypeError): return
+    if amount <= 0: return
+
+    sender = update.effective_user
+    receiver = update.message.reply_to_message.from_user
+
+    if sender.id == receiver.id:
+        await update.message.reply_text("انتقال به خود امکان‌پذیر نیست.")
+        return
+    if get_user(sender.id)['balance'] < amount:
+        await update.message.reply_text("موجودی شما کافی نیست.")
+        return
+
+    get_user(receiver.id, receiver.username) # Ensure receiver exists in DB
+    update_user_balance(sender.id, amount, add=False)
+    update_user_balance(receiver.id, amount, add=True)
+
+    text = (f"✅ <b>انتقال موفق</b> ✅\n\n"
+            f"👤 <b>از:</b> {get_user_handle(sender)}\n"
+            f"👥 <b>به:</b> {get_user_handle(receiver)}\n"
+            f"💎 <b>مبلغ:</b> {amount} الماس")
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message: return
+    match = re.search(r'(\d+)', update.message.text)
+    if not match: return
+    try:
+        amount = int(match.group(1))
+    except (ValueError, TypeError): return
+    if amount <= 0:
+        await update.message.reply_text("مبلغ شرط باید بیشتر از صفر باشد.")
+        return
+
+    initiator = update.effective_user
+    opponent = update.message.reply_to_message.from_user
+    
+    if initiator.id == opponent.id:
+        await update.message.reply_text("شما نمی‌توانید با خودتان شرط ببندید.")
+        return
+
+    initiator_balance = get_user(initiator.id)['balance']
+    if initiator_balance < amount:
+        await update.message.reply_text(f"موجودی شما برای این شرط کافی نیست. شما {initiator_balance} الماس دارید.")
+        return
+
+    bet_id = update.message.message_id
+    ACTIVE_BETS[bet_id] = {
+        'initiator': initiator.id,
+        'opponent': opponent.id,
+        'amount': amount,
+        'status': 'pending',
+        'chat_id': update.message.chat_id
+    }
+    
+    text = (f"⚔️ **درخواست شرط‌بندی جدید!** ⚔️\n\n"
+            f"👤 <b>از:</b> {get_user_handle(initiator)}\n"
+            f"👥 <b>به:</b> {get_user_handle(opponent)}\n"
+            f"💎 <b>مبلغ:</b> {amount} الماس\n\n"
+            f"{get_user_handle(opponent)}، برای قبول کردن، روی این پیام ریپلای کرده و کلمه `قبول` را ارسال کنید.")
+    
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def accept_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message: return
+    
+    bet_id = update.message.reply_to_message.message_id
+    bet = ACTIVE_BETS.get(bet_id)
+    
+    if not bet or bet['status'] != 'pending': return
+
+    acceptor = update.effective_user
+    if acceptor.id != bet['opponent']:
+        return
+
+    opponent_balance = get_user(acceptor.id)['balance']
+    if opponent_balance < bet['amount']:
+        await update.message.reply_text(f"موجودی شما برای قبول این شرط کافی نیست. شما {opponent_balance} الماس دارید.")
+        return
+
+    # کسر مبلغ از هر دو طرف
+    update_user_balance(bet['initiator'], bet['amount'], add=False)
+    update_user_balance(bet['opponent'], bet['amount'], add=False)
+    
+    bet['status'] = 'active'
+    
+    initiator_user = await context.bot.get_chat(bet['initiator'])
+    
+    text = (f"✅ **شرط تایید شد!** ✅\n\n"
+            f"💎 مبلغ کل: <b>{bet['amount'] * 2} الماس</b>\n\n"
+            f"{get_user_handle(initiator_user)} (شروع کننده) یا یک ادمین می‌تواند با ریپلای روی این پیام و ارسال `برنده`، برنده را اعلام کند.")
+            
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def declare_winner_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message.reply_to_message: return
+
+    bet_id = update.message.reply_to_message.message_id
+    bet = ACTIVE_BETS.get(bet_id)
+
+    if not bet or bet['status'] != 'active': return
+
+    declarer = update.effective_user
+    
+    # فقط شروع‌کننده یا ادمین می‌تواند برنده را اعلام کند
+    if declarer.id != bet['initiator'] and not is_admin(declarer.id):
+        return
+        
+    winner_id = bet['opponent']
+    total_pot = bet['amount'] * 2
+    
+    update_user_balance(winner_id, total_pot, add=True)
+    
+    winner_user = await context.bot.get_chat(winner_id)
+    initiator_user = await context.bot.get_chat(bet['initiator'])
+
+    text = (f"🎉 **برنده مشخص شد!** 🎉\n\n"
+            f"🏆 <b>برنده:</b> {get_user_handle(winner_user)}\n"
+            f"💎 <b>جایزه:</b> {total_pot} الماس\n"
+            f"باخت برای: {get_user_handle(initiator_user)}")
+            
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    
+    # حذف شرط از لیست فعال
+    del ACTIVE_BETS[bet_id]
+
+
 # --- Flask Web App for Login ---
 HTML_TEMPLATE = """
 <!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ورود به حساب تلگرام</title><style>body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background-color:#f4f4f9;color:#333;display:flex;justify-content:center;align-items:center;height:100vh;margin:0}.container{background:#fff;padding:2rem;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.1);text-align:center;max-width:400px;width:90%}h1{color:#007bff}p,label{color:#555}input{width:100%;padding:12px;margin:10px 0 20px;border:1px solid #ddd;border-radius:8px;box-sizing:border-box}button{background-color:#007bff;color:#fff;padding:12px 20px;border:none;border-radius:8px;cursor:pointer;font-size:16px;transition:background-color .3s}button:hover{background-color:#0056b3}.session-box{background:#e9ecef;border:1px solid #ced4da;padding:15px;border-radius:8px;word-wrap:break-word;text-align:left;direction:ltr;margin-top:20px}.error{color:#dc3545;margin-bottom:15px}</style></head><body><div class="container"><h1>{{ title }}</h1><p>{{ message|safe }}</p>{% if error %}<p class="error">{{ error }}</p>{% endif %}{% if form_html %}{{ form_html|safe }}{% endif %}{% if session_string %}<h3>Session String با موفقیت ایجاد شد!</h3><p>این متن را کپی کرده و به ربات تلگرام خود ارسال کنید.</p><div class="session-box"><code>{{ session_string }}</code></div>{% endif %}</div></body></html>
@@ -1190,6 +1335,14 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Regex('^💎 موجودی$'), check_balance_text_handler))
     application.add_handler(MessageHandler(filters.Regex('^🎁 کسب جم رایگان$'), referral_menu_text_handler))
     
+    # --- Handlerهای جدید برای گروه ---
+    application.add_handler(MessageHandler(filters.Regex(r'^انتقال\s+(\d+)') & filters.REPLY & filters.ChatType.GROUPS, handle_transfer))
+    application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.GROUPS, group_text_handler))
+    application.add_handler(MessageHandler(filters.Regex(r'^شرط\s+(\d+)') & filters.REPLY & filters.ChatType.GROUPS, start_bet_handler))
+    application.add_handler(MessageHandler(filters.Regex(r'^قبول$') & filters.REPLY & filters.ChatType.GROUPS, accept_bet_handler))
+    application.add_handler(MessageHandler(filters.Regex(r'^برنده$') & filters.REPLY & filters.ChatType.GROUPS, declare_winner_handler))
+
+
     logger.info("Bot is starting...")
     application.run_polling(drop_pending_updates=True)
 
@@ -1202,6 +1355,5 @@ if __name__ == "__main__":
         flask_thread.daemon = True
         flask_thread.start()
         main()
-    finally:ش
+    finally:
         if os.path.exists(LOCK_FILE_PATH): os.remove(LOCK_FILE_PATH)
-
