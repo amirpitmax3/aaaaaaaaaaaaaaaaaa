@@ -54,8 +54,9 @@ logging.warning("MongoDB connection is disabled. All data will be lost on restar
 TEHRAN_TIMEZONE = ZoneInfo("Asia/Tehran")
 app_flask = Flask(__name__)
 app_flask.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24))
-# The Client is initialized later in the main_bot_loop to attach it to the correct event loop
-control_bot = None
+# FIX: Initialize the bot client at the global scope so decorators work
+control_bot = Client("control_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+EVENT_LOOP = None # Will be initialized in the thread
 
 # Stores temporary login tokens {token: {'user_id': 123, 'phone_number': '+98...', 'timestamp': 1234}}
 PENDING_LOGINS = {}
@@ -88,7 +89,7 @@ PENDING_PURCHASES = {}
 FONT_STYLES = {
     "cursive":      {'0':'𝟎','1':'𝟏','2':'𝟐','3':'𝟑','4':'𝟒','5':'𝟓','6':'𝟔','7':'𝟕','8':'𝟖','9':'𝟗',':':':'},
     "stylized":     {'0':'𝟬','1':'𝟭','2':'𝟮','3':'𝟯','4':'𝟰','5':'𝟱','6':'𝟲','7':'𝟳','8':'𝟴','9':'𝟵',':':':'},
-    "doublestruck": {'0':'𝟘','1':'𝟙','2':'𝟚','3':'𝟛','4':'𝟜','5':'𝟝','6':'𝟞','7':'𝟟','8':'𝟠','9':'𝟡',':':':'},
+    "doublestruck": {'0':'𝟘','1':'𝟙','2':'𝟚','3':'𝟛','4':'𝟜','5':'𝟝','6':'𝟞','7':'𝟟','8':'𝠠','9':'𝟡',':':':'},
     "monospace":    {'0':'𝟶','1':'𝟷','2':'𝟸','3':'𝟹','4':'𝟺','5':'𝟻','6':'𝟼','7':'𝟽','8':'𝟾','9':'𝟿',':':':'},
     "normal":       {'0':'0','1':'1','2':'2','3':'3','4':'4','5':'5','6':'6','7':'7','8':'8','9':'9',':':':'},
     "circled":      {'0':'⓪','1':'①','2':'②','3':'③','4':'④','5':'⑤','6':'⑥','7':'⑦','8':'⑧','9':'⑨',':':'∶'},
@@ -181,7 +182,6 @@ PV_LOCK_STATUS = {}
 
 ACTIVE_CLIENTS = {}
 ACTIVE_BOTS = {}
-EVENT_LOOP = None # Will be initialized in the thread
 
 
 # --- NEW: Helper functions for economy ---
@@ -953,7 +953,7 @@ async def start_bot_instance(session_string: str, phone: str, user_id_from_bot: 
         logging.error(f"FAILED to start bot instance for {phone}: {e}", exc_info=True)
         await control_bot.send_message(user_id_from_bot, f"⚠️ خطایی در هنگام فعال سازی سلف رخ داد: {e}")
 
-# --- Control Bot Handlers ---
+# --- Control Bot Handlers (Defined as async functions first) ---
 async def start_handler(client, message):
     user_id = message.from_user.id
 
@@ -1320,43 +1320,45 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host='0.0.0.0', port=port)
 
+# FIX: Reworked the entire bot loop to be more stable in a thread.
 def run_asyncio_loop():
-    global EVENT_LOOP, control_bot
+    global EVENT_LOOP
     EVENT_LOOP = asyncio.new_event_loop()
     asyncio.set_event_loop(EVENT_LOOP)
     
-    control_bot = Client("control_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+    try:
+        logging.info("Starting and running control bot...")
+        # Pyrogram's run() method handles the loop and signal issues internally
+        # when it's the main entry point for asyncio.
+        control_bot.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot loop stopped.")
 
-    logging.info("Setting up control bot...")
-    # Add all handlers to the bot before starting
+async def main():
+    global control_bot
+    logging.info("Setting up control bot handlers...")
+    
+    # Add all handlers to the bot instance
     control_bot.add_handler(MessageHandler(start_handler, filters.command("start") & filters.private))
     control_bot.add_handler(MessageHandler(contact_handler, filters.contact & filters.private))
     control_bot.add_handler(MessageHandler(receipt_handler, filters.photo & filters.private))
-    # This handler needs to be last to act as a fallback
     control_bot.add_handler(MessageHandler(admin_state_handler, filters.private & filters.text & filters.create(lambda _, __, m: USER_STATES.get(m.from_user.id) is not None)))
     control_bot.add_handler(MessageHandler(main_menu_handler, filters.private & filters.text))
     control_bot.add_handler(CallbackQueryHandler(admin_callback_handler))
 
-    try:
-        logging.info("Starting control bot...")
-        control_bot.run()
-
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Event loop stopped by user.")
-    finally:
-        logging.info("Stopping control bot.")
-        if control_bot.is_initialized:
-            EVENT_LOOP.run_until_complete(control_bot.stop())
-        if EVENT_LOOP.is_running():
-            EVENT_LOOP.close()
-
+    logging.info("Control bot handlers set up.")
+    # No need to run forever here, `run()` will handle it.
 
 if __name__ == "__main__":
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE" or WEB_APP_URL is None or ADMIN_USER_ID == 12345678:
          logging.critical("FATAL: BOT_TOKEN, WEB_APP_URL, or ADMIN_USER_ID is not configured in the script. Please fill them out before running.")
     else:
         logging.info("Starting Telegram Self Bot Service...")
-        loop_thread = Thread(target=run_asyncio_loop, daemon=True)
-        loop_thread.start()
-        run_flask()
+        # The bot loop now runs in the main thread to avoid signal errors
+        # The web server runs in a secondary thread
+        flask_thread = Thread(target=run_flask, daemon=True)
+        flask_thread.start()
+        
+        # This will block the main thread and run the bot
+        run_asyncio_loop()
 
