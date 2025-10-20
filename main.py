@@ -69,8 +69,13 @@ logger = logging.getLogger(__name__)
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(context.error, Conflict):
         logger.warning("Conflict error detected. Requesting application stop.")
-        # This will cause the run_polling loop to stop gracefully
-        await context.application.stop()
+        # Safely stop the application only if it's running
+        try:
+            if context.application.running:
+                await context.application.stop()
+        except RuntimeError as e:
+            # This can happen in a race condition, it's safe to ignore.
+            logger.warning(f"Ignoring error during stop: {e}")
         return
     
     logger.error(f"Exception while handling an update:", exc_info=context.error)
