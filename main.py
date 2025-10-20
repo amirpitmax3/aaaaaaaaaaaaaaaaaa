@@ -68,11 +68,18 @@ logger = logging.getLogger(__name__)
 
 # --- Error Handler ---
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log Errors and handle Conflict caused by other running bot instances."""
     if isinstance(context.error, Conflict):
-        logger.warning("Conflict error detected. This instance will stop polling gracefully.")
+        logger.warning("Conflict error detected. Another instance of the bot is likely running.")
+        logger.info("This instance will shut down to resolve the conflict.")
+        
+        # The run_polling method will stop when shutdown is called.
+        # shutdown() is a more graceful way to stop the application.
         if context.application.running:
-             await context.application.stop()
-        return
+            await context.application.shutdown()
+        return # Error handled
+
+    # For all other errors, log them.
     logger.error(f"Exception while handling an update:", exc_info=context.error)
     
 
@@ -134,12 +141,37 @@ AUTO_REACTION_STATUS = {}
 ACTIVE_BETS = {} # برای ذخیره شرط‌های فعال
 
 
+# --- دکوریتور برای تلاش مجدد در صورت قفل بودن دیتابیس ---
+def db_retry(max_retries=5, delay=0.1):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except sqlite3.OperationalError as e:
+                    if "database is locked" in str(e):
+                        if attempt < max_retries - 1:
+                            sleep_time = delay * (2 ** attempt) + random.uniform(0, 0.1)
+                            logger.warning(f"Database is locked. Retrying '{func.__name__}' in {sleep_time:.2f}s...")
+                            time.sleep(sleep_time)
+                            continue
+                        else:
+                            logger.error(f"Database remained locked after {max_retries} retries for function {func.__name__}.")
+                            raise
+                    else:
+                        raise
+        return wrapper
+    return decorator
+
 # --- مدیریت دیتابیس (SQLite) ---
+@db_retry()
 def db_connect():
-    con = sqlite3.connect(DB_PATH, check_same_thread=False, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+    con = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
     con.row_factory = sqlite3.Row
     return con, con.cursor()
 
+@db_retry()
 def setup_database():
     con, cur = db_connect()
     cur.execute("""
@@ -184,6 +216,7 @@ def setup_database():
     logger.info("Database setup complete.")
 
 # --- توابع کمکی دیتابیس ---
+@db_retry()
 def get_setting(key):
     con, cur = db_connect()
     cur.execute("SELECT value FROM settings WHERE key = ?", (key,))
@@ -191,12 +224,14 @@ def get_setting(key):
     con.close()
     return result['value'] if result else None
 
+@db_retry()
 def update_setting(key, value):
     con, cur = db_connect()
     cur.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
     con.commit()
     con.close()
 
+@db_retry()
 def get_user(user_id, username=None):
     con, cur = db_connect()
     cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
@@ -214,12 +249,14 @@ def get_user(user_id, username=None):
     con.close()
     return user
 
+@db_retry()
 def update_user_db(user_id, column, value):
     con, cur = db_connect()
     cur.execute(f"UPDATE users SET {column} = ? WHERE user_id = ?", (value, user_id))
     con.commit()
     con.close()
 
+@db_retry()
 def update_user_balance(user_id, amount, add=True):
     con, cur = db_connect()
     cur.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
@@ -237,6 +274,7 @@ def update_user_balance(user_id, amount, add=True):
     logger.info(f"Balance update for user {user_id}: Old={old_balance}, Amount={' + ' if add else ' - '}{amount}, New={new_balance}")
 
 
+@db_retry()
 def get_admins():
     con, cur = db_connect()
     cur.execute("SELECT user_id FROM admins")
@@ -382,33 +420,57 @@ async def receive_phone_contact(update: Update, context: ContextTypes.DEFAULT_TY
 async def process_session_string(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session_string = update.message.text.strip()
-    await update.message.reply_text("در حال بررسی Session String... لطفاً صبر کنید.")
+    msg = await update.message.reply_text("در حال بررسی Session String... لطفاً صبر کنید.")
     try:
-        client = Client(name=f"verify_{user_id}", api_id=API_ID, api_hash=API_HASH, session_string=session_string, in_memory=True)
-        await client.start()
-        me = await client.get_me()
-        await client.stop()
+        # Verification client is temporary
+        verify_client = Client(name=f"verify_{user_id}", api_id=API_ID, api_hash=API_HASH, session_string=session_string, in_memory=True)
+        await verify_client.start()
+        me = await verify_client.get_me()
+        await verify_client.stop()
         
-        # Set last_deduction_at to current time on first activation
         update_user_db(user_id, "last_deduction_at", datetime.now(TEHRAN_TIMEZONE))
         update_user_db(user_id, "base_first_name", me.first_name)
         update_user_db(user_id, "base_last_name", me.last_name or "")
         update_user_db(user_id, "self_active", True)
         update_user_db(user_id, "session_string", session_string)
         
-        permanent_client = Client(name=f"user_{user_id}", api_id=API_ID, api_hash=API_HASH, session_string=session_string, in_memory=True)
+        # Call the helper to start the actual session
+        await start_userbot_session(user_id, session_string, context.application)
         
-        # --- Add all feature handlers ---
-        add_all_handlers(permanent_client)
-        
-        user_sessions[user_id] = permanent_client
-        asyncio.create_task(self_pro_background_task(user_id, permanent_client, application))
-        await update.message.reply_text("✅ dark self با موفقیت فعال شد! اکنون می‌توانید آن را مدیریت کنید:", reply_markup=await self_pro_management_keyboard(user_id))
+        await msg.edit_text("✅ dark self با موفقیت فعال شد! اکنون می‌توانید آن را مدیریت کنید:", reply_markup=await self_pro_management_keyboard(user_id))
         return ConversationHandler.END
     except Exception as e:
         logger.error(f"Failed to activate self with session string for {user_id}: {e}", exc_info=True)
-        await update.message.reply_text(f"❌ Session String نامعتبر است یا خطایی رخ داد: `{e}`", parse_mode=ParseMode.MARKDOWN)
+        await msg.edit_text(f"❌ Session String نامعتبر است یا خطایی رخ داد: `{e}`", parse_mode=ParseMode.MARKDOWN)
         return AWAIT_SESSION_STRING
+
+async def start_userbot_session(user_id: int, session_string: str, application: Application):
+    """Initializes and starts a user's Pyrogram client and background tasks."""
+    if user_id in user_sessions:
+        logger.warning(f"Userbot session for {user_id} is already running. Skipping.")
+        return
+
+    logger.info(f"Starting userbot session for user {user_id}...")
+    try:
+        client = Client(
+            name=f"user_{user_id}",
+            api_id=API_ID,
+            api_hash=API_HASH,
+            session_string=session_string,
+            in_memory=True
+        )
+        
+        add_all_handlers(client)
+        
+        user_sessions[user_id] = client
+        asyncio.create_task(self_pro_background_task(user_id, client, application))
+        logger.info(f"Successfully started and scheduled tasks for user {user_id}.")
+    except Exception as e:
+        logger.error(f"Failed to start userbot session for {user_id}: {e}")
+        # If the session is invalid on startup, deactivate it to prevent restart loops.
+        update_user_db(user_id, "self_active", False)
+        update_user_db(user_id, "session_string", None) # Clear invalid string
+        logger.warning(f"Deactivated self for user {user_id} due to invalid session on startup.")
 
 async def self_pro_background_task(user_id: int, client: Client, application: Application):
     try:
@@ -1278,11 +1340,34 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("عملیات لغو شد.", reply_markup=await main_reply_keyboard(update.effective_user.id))
     return ConversationHandler.END
 
+async def post_init_callback(application: Application):
+    """Restart all active userbot sessions after the bot starts."""
+    logger.info("Bot initialized. Restarting active userbot sessions...")
+    con, cur = db_connect()
+    try:
+        cur.execute("SELECT user_id, session_string FROM users WHERE self_active = 1 AND session_string IS NOT NULL")
+        active_users = cur.fetchall()
+        logger.info(f"Found {len(active_users)} active user sessions to restart.")
+        for user in active_users:
+            await start_userbot_session(user['user_id'], user['session_string'], application)
+    finally:
+        con.close()
+
 def main() -> None:
     global application
     setup_database()
     persistence = PicklePersistence(filepath=os.path.join(DATA_PATH, "bot_persistence.pickle"))
-    application = Application.builder().token(TELEGRAM_TOKEN).persistence(persistence).build()
+    
+    application = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .persistence(persistence)
+        .post_init(post_init_callback) # Restart sessions on startup
+        .connect_timeout(30)
+        .read_timeout(30)
+        .build()
+    )
+
     application.add_error_handler(error_handler)
 
     self_pro_conv = ConversationHandler(
