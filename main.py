@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(context.error, Conflict):
         logger.warning("Conflict error detected. This instance will stop polling gracefully.")
-        context.application.stop()
+        await context.application.stop()
         return
     logger.error(f"Exception while handling an update:", exc_info=context.error)
     
