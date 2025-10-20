@@ -16,6 +16,7 @@ import traceback
 import html
 import secrets
 from zoneinfo import ZoneInfo
+from functools import wraps
 
 # کتابخانه‌های وب برای زنده نگه داشتن ربات در Render
 from flask import Flask, request, render_template_string
@@ -1241,3 +1242,4 @@ if __name__ == "__main__":
             loop.close()
         
         logger.info("Shutdown complete.")
+
