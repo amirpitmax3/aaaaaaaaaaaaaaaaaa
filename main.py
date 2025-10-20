@@ -954,7 +954,6 @@ async def start_bot_instance(session_string: str, phone: str, user_id_from_bot: 
         await control_bot.send_message(user_id_from_bot, f"⚠️ خطایی در هنگام فعال سازی سلف رخ داد: {e}")
 
 # --- Control Bot Handlers ---
-@control_bot.on_message(filters.command("start") & filters.private)
 async def start_handler(client, message):
     user_id = message.from_user.id
 
@@ -975,7 +974,6 @@ async def start_handler(client, message):
     await message.reply_text("خوش آمدید! لطفا یک گزینه را انتخاب کنید:", reply_markup=keyboard)
 
 
-@control_bot.on_message(filters.private & filters.text)
 async def main_menu_handler(client, message):
     user = message.from_user
     text = message.text
@@ -1030,7 +1028,6 @@ async def main_menu_handler(client, message):
         # await start_handler(client, message)
 
 
-@control_bot.on_message(filters.contact & filters.private)
 async def contact_handler(client, message):
     user = message.from_user
     contact = message.contact
@@ -1063,7 +1060,6 @@ async def contact_handler(client, message):
         reply_markup=ReplyKeyboardRemove()
     )
 
-@control_bot.on_message(filters.photo & filters.private)
 async def receipt_handler(client, message):
     user = message.from_user
     purchase_info = PENDING_PURCHASES.pop(user.id, None)
@@ -1106,7 +1102,6 @@ async def show_admin_panel(message):
     ])
     await message.reply_text("⚙️ **پنل مدیریت**", reply_markup=keyboard)
 
-@control_bot.on_callback_query()
 async def admin_callback_handler(client, callback_query):
     user_id = callback_query.from_user.id
     data = callback_query.data
@@ -1146,7 +1141,6 @@ async def admin_callback_handler(client, callback_query):
     await callback_query.answer()
 
 
-@control_bot.on_message(filters.private & filters.text)
 async def admin_state_handler(client, message):
     user_id = message.from_user.id
     state = USER_STATES.get(user_id)
