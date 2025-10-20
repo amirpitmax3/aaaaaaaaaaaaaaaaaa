@@ -36,7 +36,7 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s - %(
 API_ID = 28190856
 API_HASH = "6b9b5309c2a211b526c6ddad6eabb521"
 # ❗ REQUIRED: Token for your controller bot from @BotFather
-BOT_TOKEN = "8367987651:AAE4qOeiBpJNH4fjCt1trzM7g5cKF8s8qGM"
+BOT_TOKEN = "8233582209:AAHKPQX-349tAfBOCFWbRRqcpD-QbVrDzQ0"
 # ❗ REQUIRED: Your main Telegram user ID.
 ADMIN_USER_ID = 7423552124 # Replace with your numeric Telegram User ID
 
