@@ -70,7 +70,8 @@ logger = logging.getLogger(__name__)
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(context.error, Conflict):
         logger.warning("Conflict error detected. This instance will stop polling gracefully.")
-        await context.application.stop()
+        if context.application.is_running:
+             await context.application.stop()
         return
     logger.error(f"Exception while handling an update:", exc_info=context.error)
     
@@ -1201,6 +1202,6 @@ if __name__ == "__main__":
         flask_thread.daemon = True
         flask_thread.start()
         main()
-    finally:
+    finally:ش
         if os.path.exists(LOCK_FILE_PATH): os.remove(LOCK_FILE_PATH)
 
