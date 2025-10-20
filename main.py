@@ -1175,18 +1175,14 @@ if __name__ == "__main__":
         if user_sessions:
             logger.info("Cleaning up active user sessions...")
             cleanup_tasks = [clean_up_user_session(user_id) for user_id in list(user_sessions.keys())]
-            loop.run_until_complete(asyncio.gather(*cleanup_tasks))
+            if loop.is_running():
+                loop.run_until_complete(asyncio.gather(*cleanup_tasks))
             logger.info("All user sessions cleaned up.")
 
         if os.path.exists(LOCK_FILE_PATH): 
             os.remove(LOCK_FILE_PATH)
         
-        logger.info("Closing the event loop.")
-        loop.close()
-" in the document "amirpitmax3/aaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaa-main/main.py".
-
-I am getting the following error:
-ImportError: cannot import name 'Update' from 'telegram' (/opt/render/project/src/.venv/lib/python3.13/site-packages/telegram/__init__.py)
-
-Please fix it.
+        if not loop.is_closed():
+            logger.info("Closing the event loop.")
+            loop.close()
 
