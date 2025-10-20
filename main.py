@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     if isinstance(context.error, Conflict):
         logger.warning("Conflict error detected. This instance will stop polling gracefully.")
-        if context.application.is_running:
+        if context.application.running:
              await context.application.stop()
         return
     logger.error(f"Exception while handling an update:", exc_info=context.error)
@@ -1267,93 +1267,5 @@ def submit_password(token):
         password, client = request.form['password'], session_data['client']
         try:
             await client.check_password(password)
-            session_string = await client.export_session_string(); await client.disconnect(); LOGIN_SESSIONS.pop(token, None)
-            return render_template_string(HTML_TEMPLATE, title="موفقیت!", message="عملیات با موفقیت انجام شد.", session_string=session_string)
-        except Exception as e:
-            logger.error(f"Web login error (check_password) for {token}: {e}"); await client.disconnect(); LOGIN_SESSIONS.pop(token, None)
-            return render_template_string(HTML_TEMPLATE, title="خطا", message=f"رمز عبور اشتباه بود: {e}")
-    return asyncio.run(worker())
+            session_string = await client.export_session_string();
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("عملیات لغو شد.", reply_markup=await main_reply_keyboard(update.effective_user.id))
-    return ConversationHandler.END
-
-def main() -> None:
-    global application
-    setup_database()
-    persistence = PicklePersistence(filepath=os.path.join(DATA_PATH, "bot_persistence.pickle"))
-    application = Application.builder().token(TELEGRAM_TOKEN).persistence(persistence).build()
-    application.add_error_handler(error_handler)
-
-    self_pro_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex('^🚀 dark self$'), self_pro_menu_text_handler)],
-        states={
-            AWAIT_PHONE_CONTACT: [MessageHandler(filters.CONTACT, receive_phone_contact)],
-            AWAIT_SESSION_STRING: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_session_string)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)], persistent=False, name="self_pro_login_conversation"
-    )
-    main_conv = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex('^💰 افزایش موجودی$'), buy_diamond_start_text),
-            MessageHandler(filters.Regex('^👑 پنل ادمین$'), admin_panel_entry_text),
-            MessageHandler(filters.Regex('^💬 پشتیبانی$'), support_start),
-            CallbackQueryHandler(ask_for_reply, pattern=r"^reply_to_")
-        ],
-        states={
-            ASK_DIAMOND_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_diamond_amount)],
-            AWAIT_RECEIPT: [MessageHandler(filters.PHOTO, await_receipt)],
-            ADMIN_PANEL_MAIN: [
-                CallbackQueryHandler(ask_for_setting, pattern=r"admin_set_|admin_add|admin_remove"),
-                CallbackQueryHandler(toggle_channel_lock, pattern=r"^admin_toggle_channel_lock$")
-            ],
-            SETTING_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_setting)],
-            SETTING_INITIAL_BALANCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_setting)],
-            SETTING_SELF_COST: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_setting)],
-            SETTING_REFERRAL_REWARD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_setting)],
-            SETTING_PAYMENT_CARD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_payment_card)],
-            SETTING_CARD_HOLDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_card_holder)],
-            SETTING_CHANNEL_LINK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_setting)],
-            ADMIN_ADD: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_admin)],
-            ADMIN_REMOVE: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_admin)],
-            AWAITING_SUPPORT_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, forward_message_to_admin)],
-            AWAITING_ADMIN_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_reply_to_user)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)], persistent=True, name="main_conversation"
-    )
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(self_pro_conv); application.add_handler(main_conv)
-    application.add_handler(CallbackQueryHandler(handle_transaction_approval, pattern=r"^(approve|reject)_\d+$"))
-    application.add_handler(CallbackQueryHandler(toggle_self_pause, pattern=r"^self_(pause|resume)$"))
-    application.add_handler(CallbackQueryHandler(change_font_menu, pattern=r"^change_font_menu$"))
-    application.add_handler(CallbackQueryHandler(set_font, pattern=r"^set_font_"))
-    application.add_handler(CallbackQueryHandler(back_to_self_menu, pattern=r"^back_to_self_menu$"))
-    application.add_handler(CallbackQueryHandler(delete_self_confirm, pattern=r"^delete_self_confirm$"))
-    application.add_handler(CallbackQueryHandler(delete_self_final, pattern=r"^delete_self_final$"))
-    application.add_handler(CallbackQueryHandler(reactivate_self_pro, pattern=r"^reactivate_self$"))
-    application.add_handler(MessageHandler(filters.Regex('^💎 موجودی$'), check_balance_text_handler))
-    application.add_handler(MessageHandler(filters.Regex('^🎁 کسب جم رایگان$'), referral_menu_text_handler))
-    
-    # --- Handlerهای جدید برای گروه ---
-    application.add_handler(MessageHandler(filters.Regex(r'^انتقال\s+(\d+)') & filters.REPLY & filters.ChatType.GROUPS, handle_transfer))
-    application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.GROUPS, group_text_handler))
-    application.add_handler(MessageHandler(filters.Regex(r'^شرط\s+(\d+)') & filters.REPLY & filters.ChatType.GROUPS, start_bet_handler))
-    application.add_handler(MessageHandler(filters.Regex(r'^قبول$') & filters.REPLY & filters.ChatType.GROUPS, accept_bet_handler))
-    application.add_handler(MessageHandler(filters.Regex(r'^برنده$') & filters.REPLY & filters.ChatType.GROUPS, declare_winner_handler))
-
-
-    logger.info("Bot is starting...")
-    application.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    if os.path.exists(LOCK_FILE_PATH): logger.critical(f"Lock file exists. Exiting."); sys.exit(0)
-    try:
-        with open(LOCK_FILE_PATH, "w") as f: f.write(str(os.getpid()))
-        atexit.register(lambda: os.path.exists(LOCK_FILE_PATH) and os.remove(LOCK_FILE_PATH))
-        flask_thread = Thread(target=lambda: web_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000))))
-        flask_thread.daemon = True
-        flask_thread.start()
-        main()
-    finally:
-        if os.path.exists(LOCK_FILE_PATH): os.remove(LOCK_FILE_PATH)
