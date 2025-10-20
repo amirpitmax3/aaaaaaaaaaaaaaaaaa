@@ -36,7 +36,7 @@ logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s - %(
 API_ID = 28190856
 API_HASH = "6b9b5309c2a211b526c6ddad6eabb521"
 # ❗ REQUIRED: Token for your controller bot from @BotFather
-BOT_TOKEN = "8233582209:AAHKPQX-349tAfBOCFWbRRqcpD-QbVrDzQ0"
+BOT_TOKEN = "8367987651:AAE4qOeiBpJNH4fjCt1trzM7g5cKF8s8qGM"
 # ❗ REQUIRED: Your main Telegram user ID.
 ADMIN_USER_ID = 7423552124 # Replace with your numeric Telegram User ID
 
@@ -180,9 +180,11 @@ PLAYING_MODE_STATUS = {}
 PV_LOCK_STATUS = {}
 
 
-# The global event loop is no longer needed for this structure.
 ACTIVE_CLIENTS = {}
 ACTIVE_BOTS = {}
+# Create a new event loop that will be used by the bot thread
+EVENT_LOOP = asyncio.new_event_loop()
+
 
 # --- NEW: Helper functions for economy ---
 def get_user_balance(user_id):
@@ -1216,8 +1218,7 @@ def login_from_token(token):
     
     try:
         # Use a global event loop reference for thread safety
-        loop = asyncio.get_event_loop()
-        future = asyncio.run_coroutine_threadsafe(send_code_task(session['phone_number']), loop)
+        future = asyncio.run_coroutine_threadsafe(send_code_task(session['phone_number']), EVENT_LOOP)
         future.result(45) # Wait for code to be sent
         PENDING_LOGINS.pop(token, None) # Invalidate token after use
         return render_template_string(HTML_TEMPLATE, step='GET_SETTINGS_AND_CODE', phone_number=session['phone_number'], font_previews=get_font_previews())
@@ -1236,30 +1237,28 @@ def submit_login():
         return redirect(url_for('index'))
 
     try:
-        loop = asyncio.get_event_loop()
-        if not loop.is_running():
+        if not EVENT_LOOP.is_running():
             raise RuntimeError("Event loop is not running.")
             
         if action == 'code':
             session['font_style'] = request.form.get('font_style')
             session['disable_clock'] = 'on' == request.form.get('disable_clock')
-            future = asyncio.run_coroutine_threadsafe(sign_in_task(phone, request.form.get('code')), loop)
+            future = asyncio.run_coroutine_threadsafe(sign_in_task(phone, request.form.get('code')), EVENT_LOOP)
             next_step = future.result(45)
             if next_step == 'GET_PASSWORD':
                 return render_template_string(HTML_TEMPLATE, step='GET_PASSWORD', phone_number=phone)
             return render_template_string(HTML_TEMPLATE, step='SHOW_SUCCESS')
             
         elif action == 'password':
-            future = asyncio.run_coroutine_threadsafe(check_password_task(phone, request.form.get('password')), loop)
+            future = asyncio.run_coroutine_threadsafe(check_password_task(phone, request.form.get('password')), EVENT_LOOP)
             future.result(45)
             return render_template_string(HTML_TEMPLATE, step='SHOW_SUCCESS')
 
     except Exception as e:
         if phone: 
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.run_coroutine_threadsafe(cleanup_client(phone), loop)
+                if EVENT_LOOP.is_running():
+                    asyncio.run_coroutine_threadsafe(cleanup_client(phone), EVENT_LOOP)
             except RuntimeError:
                 pass # Loop is already closed
         logging.error(f"Error during '{action}': {e}", exc_info=True)
@@ -1330,6 +1329,7 @@ def run_flask():
     app_flask.run(host='0.0.0.0', port=port)
 
 def run_asyncio_loop():
+    asyncio.set_event_loop(EVENT_LOOP)
     logging.info("Setting up control bot...")
     
     # Add all handlers to the bot before starting
@@ -1341,13 +1341,19 @@ def run_asyncio_loop():
     control_bot.add_handler(MessageHandler(main_menu_handler, filters.private & filters.text))
     control_bot.add_handler(CallbackQueryHandler(admin_callback_handler))
 
-    # Auto-login from DB is removed.
-    
-    logging.info("Starting and running control bot until stopped.")
-    # The run() method starts the client, listens for updates, and blocks until the client is stopped.
-    # It handles the asyncio loop automatically.
-    control_bot.run()
-    logging.info("Control bot has been stopped.")
+    try:
+        logging.info("Starting control bot...")
+        EVENT_LOOP.run_until_complete(control_bot.start())
+        logging.info("Control bot started. Running event loop forever.")
+        EVENT_LOOP.run_forever()
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Event loop stopped by user.")
+    finally:
+        logging.info("Stopping control bot and closing loop.")
+        if EVENT_LOOP.is_running():
+            if control_bot.is_initialized:
+                EVENT_LOOP.run_until_complete(control_bot.stop())
+            EVENT_LOOP.close()
 
 
 if __name__ == "__main__":
@@ -1358,3 +1364,4 @@ if __name__ == "__main__":
         loop_thread = Thread(target=run_asyncio_loop, daemon=True)
         loop_thread.start()
         run_flask()
+
