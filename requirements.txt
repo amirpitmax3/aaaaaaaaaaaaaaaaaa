@@ -1,4 +1,4 @@
-telegram
+python-telegram-bot
 pyrogram
 tgcrypto
 Flask
