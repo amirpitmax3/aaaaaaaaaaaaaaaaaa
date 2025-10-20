@@ -236,23 +236,41 @@ def get_user_handle(user: User): return f"@{user.username}" if user.username els
 def channel_membership_required(func):
     @wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE, *args, **kwargs):
+        logger.info("--- Checking channel membership ---")
         is_enabled = get_setting("mandatory_channel_enabled")
-        if is_enabled != 'true': return await func(update, context, *args, **kwargs)
+        if is_enabled != 'true':
+            logger.info("Channel lock is disabled. Skipping check.")
+            return await func(update, context, *args, **kwargs)
+        
         user = update.effective_user
-        if is_admin(user.id): return await func(update, context, *args, **kwargs)
+        logger.info(f"User: {user.id} ({user.full_name})")
+
+        if is_admin(user.id):
+            logger.info("User is an admin. Skipping check.")
+            return await func(update, context, *args, **kwargs)
+        
         channel_id = get_setting("mandatory_channel")
-        if not channel_id or not channel_id.startswith('@'): return await func(update, context, *args, **kwargs)
+        if not channel_id or not channel_id.startswith('@'):
+            logger.warning("Mandatory channel not set correctly. Skipping check.")
+            return await func(update, context, *args, **kwargs)
+        
+        logger.info(f"Checking membership for channel: {channel_id}")
         try:
             member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user.id)
+            logger.info(f"User status in channel: {member.status}")
             if member.status not in [ChatMemberStatus.MEMBER, ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
                 raise ValueError("User not a member")
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to check membership for user {user.id} in {channel_id}: {e}")
             channel_link = f"https://t.me/{channel_id.lstrip('@')}"
             keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("عضویت در کانال", url=channel_link)]])
             await (update.effective_message or update.callback_query.message).reply_text(
                 "برای استفاده از ربات، لطفا ابتدا در کانال ما عضو شوید و سپس دوباره تلاش کنید.", reply_markup=keyboard
             )
+            logger.info("Sent 'join channel' message and stopped processing.")
             return
+        
+        logger.info("Membership check passed. Proceeding with command.")
         return await func(update, context, *args, **kwargs)
     return wrapper
 
