@@ -26,7 +26,14 @@ import random
 
 
 # --- Logging Setup ---
-logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s - %(message)s')
+# FIX: Added more detailed logging format for better debugging
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s [%(name)s:%(lineno)d] - %(message)s'
+)
+# Quieten pyrogram's verbose logging
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
+
 
 # =======================================================
 # ⚠️ Main Settings (Enter your details here)
@@ -1105,7 +1112,7 @@ async def private_text_router(client, message):
             price = ADMIN_SETTINGS['diamond_price']
             total_cost = amount * price
             
-            USER_STATES[user.id] = None # Clear state
+            USER_STATES[user_id] = None # Clear state
 
             invoice = (
                 f"🧾 **پیش‌فاکتور خرید**\n\n"
@@ -1323,13 +1330,11 @@ async def main():
     flask_thread = Thread(target=run_flask, daemon=True)
     flask_thread.start()
     
-    await control_bot.start()
-    logging.info("Control bot started successfully.")
-    
-    await idle()
+    async with control_bot:
+        logging.info("Control bot started successfully.")
+        await idle()
     
     logging.info("Stopping control bot...")
-    await control_bot.stop()
 
 if __name__ == "__main__":
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE" or WEB_APP_URL is None or ADMIN_USER_ID == 12345678:
@@ -1337,4 +1342,8 @@ if __name__ == "__main__":
     else:
         logging.info("Starting Telegram Self Bot Service...")
         # The main async function now runs in the main thread, handling both Flask and the Bot
-        asyncio.run(main())
+        try:
+            asyncio.run(main())
+        except (KeyboardInterrupt, SystemExit):
+            logging.info("Service stopped.")
+
