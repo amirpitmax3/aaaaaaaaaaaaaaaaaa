@@ -6,7 +6,7 @@ import aiohttp
 import time
 import secrets
 from urllib.parse import quote
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.handlers import MessageHandler, CallbackQueryHandler
 from pyrogram.types import (
     KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove,
@@ -56,7 +56,7 @@ app_flask = Flask(__name__)
 app_flask.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24))
 # FIX: Initialize the bot client at the global scope so decorators work
 control_bot = Client("control_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-EVENT_LOOP = None # Will be initialized in the thread
+EVENT_LOOP = None # Will be initialized in the main thread
 
 # Stores temporary login tokens {token: {'user_id': 123, 'phone_number': '+98...', 'timestamp': 1234}}
 PENDING_LOGINS = {}
@@ -1150,7 +1150,7 @@ async def admin_state_handler(client, message):
             f"لطفاً این مبلغ را به شماره کارت زیر واریز کنید و **عکس رسید** را ارسال نمایید:\n"
             f"`{ADMIN_SETTINGS['card_number']}`"
         )
-        PENDING_PURCHASES[user_id] = {'amount': amount, 'price': total_cost}
+        PENDING_PURCHASES[user.id] = {'amount': amount, 'price': total_cost}
         await message.reply_text(invoice)
         return # Important to stop further processing
 
@@ -1326,27 +1326,35 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app_flask.run(host='0.0.0.0', port=port)
 
-# FIX: Reworked the entire bot loop to be more stable in a thread.
-def run_asyncio_loop():
-    global EVENT_LOOP
-    EVENT_LOOP = asyncio.new_event_loop()
-    asyncio.set_event_loop(EVENT_LOOP)
+# FIX: Reworked the entire bot loop to be more stable.
+async def main():
+    global EVENT_LOOP, control_bot
+    logging.info("Starting control bot and Flask server...")
+
+    # Get the current running loop to be used by Flask thread
+    EVENT_LOOP = asyncio.get_running_loop()
     
-    try:
-        logging.info("Starting and running control bot...")
-        # Pyrogram's run() method handles the loop and signal issues internally
-        # when it's the main entry point for asyncio.
-        # This will block until the bot is stopped.
-        control_bot.run()
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Bot loop stopped.")
+    # Start the Flask app in a separate thread
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    # Start the Pyrogram client
+    await control_bot.start()
+    logging.info("Control bot started successfully.")
+    
+    # Keep the bot running until it's stopped
+    await idle()
+    
+    # This part will run upon stopping the bot (e.g., with CTRL+C)
+    logging.info("Stopping control bot...")
+    await control_bot.stop()
 
 
 if __name__ == "__main__":
     if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE" or WEB_APP_URL is None or ADMIN_USER_ID == 12345678:
          logging.critical("FATAL: BOT_TOKEN, WEB_APP_URL, or ADMIN_USER_ID is not configured in the script. Please fill them out before running.")
     else:
-        # Define handlers before starting any threads
+        # Define handlers before starting any threads or loops
         control_bot.add_handler(MessageHandler(start_handler, filters.command("start") & filters.private))
         control_bot.add_handler(MessageHandler(contact_handler, filters.contact & filters.private))
         control_bot.add_handler(MessageHandler(receipt_handler, filters.photo & filters.private))
@@ -1356,10 +1364,6 @@ if __name__ == "__main__":
 
         logging.info("Starting Telegram Self Bot Service...")
         
-        # The bot loop now runs in its own thread
-        bot_thread = Thread(target=run_asyncio_loop, daemon=True)
-        bot_thread.start()
-
-        # The Flask app runs in the main thread
-        run_flask()
+        # Run the main async function which handles both Flask and the Bot
+        asyncio.run(main())
 
