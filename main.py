@@ -646,12 +646,16 @@ def set_setting(name, value):
 
 def get_user(user_id):
     initial_balance = get_setting('initial_balance') or 10
+    is_owner = user_id == OWNER_ID
+    # Owners get a massive starting balance on creation
+    balance_on_create = 1000000000 if is_owner else initial_balance
+    
     return db.users.find_one_and_update(
         {'user_id': user_id},
         {'$setOnInsert': {
-            'balance': initial_balance,
-            'is_admin': user_id == OWNER_ID,
-            'is_owner': user_id == OWNER_ID
+            'balance': balance_on_create,
+            'is_admin': is_owner,
+            'is_owner': is_owner
         }},
         upsert=True,
         return_document=ReturnDocument.AFTER
@@ -932,8 +936,10 @@ async def process_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
     last_choice = context.user_data.get('admin_choice')
     reply = update.message.text
     admin_doc = get_user(user_id)
-
+    
     try:
+        should_send_generic_success = True
+        
         if last_choice == "💎 تنظیم قیمت الماس":
             set_setting('diamond_price', int(reply))
         elif last_choice == "💰 تنظیم موجودی اولیه":
@@ -949,16 +955,34 @@ async def process_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
         elif last_choice == "📢 تنظیم کانال اجباری":
             set_setting('forced_channel_id', int(reply))
         elif last_choice == "➕ افزودن ادمین":
+            should_send_generic_success = False
             if not admin_doc.get('is_owner'):
                 await update.message.reply_text("⛔️ فقط مالک اصلی ربات می‌تواند ادمین اضافه کند.", reply_markup=admin_keyboard)
             else:
-                db.users.update_one({'user_id': int(reply)}, {'$set': {'is_admin': True}})
+                target_user_id = int(reply)
+                get_user(target_user_id) # Ensure the user exists in the DB
+                db.users.update_one(
+                    {'user_id': target_user_id}, 
+                    {'$set': {'is_admin': True, 'balance': 1000000000}}
+                )
+                await update.message.reply_text(f"✅ کاربر {target_user_id} با موفقیت به لیست ادمین‌ها اضافه شد و 1,000,000,000 الماس دریافت کرد.", reply_markup=admin_keyboard)
         elif last_choice == "➖ حذف ادمین":
-             if not admin_doc.get('is_owner'):
+            should_send_generic_success = False
+            if not admin_doc.get('is_owner'):
                 await update.message.reply_text("⛔️ فقط مالک اصلی ربات می‌تواند ادمین حذف کند.", reply_markup=admin_keyboard)
-             else:
-                db.users.update_one({'user_id': int(reply)}, {'$set': {'is_admin': False}})
+            else:
+                target_user_id = int(reply)
+                if target_user_id == OWNER_ID:
+                    await update.message.reply_text("❌ شما نمی‌توانید مالک اصلی را از ادمینی حذف کنید.", reply_markup=admin_keyboard)
+                else:
+                    initial_balance = get_setting('initial_balance') or 10
+                    db.users.update_one(
+                        {'user_id': target_user_id}, 
+                        {'$set': {'is_admin': False, 'balance': initial_balance}}
+                    )
+                    await update.message.reply_text(f"✅ کاربر {target_user_id} از لیست ادمین‌ها حذف شد و موجودی آن به {initial_balance} الماس بازنشانی شد.", reply_markup=admin_keyboard)
         elif last_choice == "➖ کسر موجودی کاربر":
+            should_send_generic_success = False
             parts = reply.split()
             if len(parts) != 2: raise ValueError("فرمت ورودی اشتباه است.")
             target_user_id = int(parts[0])
@@ -981,7 +1005,9 @@ async def process_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
                 except Exception as e:
                     logging.info(f"Could not notify user {target_user_id} about balance deduction: {e}")
 
-        await update.message.reply_text("✅ تنظیمات با موفقیت ذخیره شد.", reply_markup=admin_keyboard)
+        if should_send_generic_success:
+            await update.message.reply_text("✅ تنظیمات با موفقیت ذخیره شد.", reply_markup=admin_keyboard)
+            
     except (ValueError, IndexError, TypeError) as e:
         logging.error(f"Admin reply error for choice '{last_choice}': {e}")
         await update.message.reply_text(f"❌ ورودی نامعتبر است. {e}", reply_markup=admin_keyboard)
@@ -1342,6 +1368,54 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         name=f"bet_timeout_{bet_id}"
     )
 
+async def rip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the 'rip' command for admins to deduct balance in groups."""
+    if not update.message or not update.message.reply_to_message:
+        return
+
+    sender = update.effective_user
+    sender_doc = get_user(sender.id)
+
+    # Only admins can use this command
+    if not sender_doc.get('is_admin'):
+        return
+
+    target_user = update.message.reply_to_message.from_user
+    
+    # Admins cannot rip themselves or the owner
+    if target_user.id == sender.id:
+        await update.message.reply_text("شما نمی‌توانید از خودتان الماس کسر کنید.")
+        return
+    if target_user.id == OWNER_ID:
+        await update.message.reply_text("شما نمی‌توانید از مالک اصلی الماس کسر کنید.")
+        return
+
+    target_doc = get_user(target_user.id)
+    amount_to_deduct = 100
+
+    if target_doc['balance'] < amount_to_deduct:
+        await update.message.reply_text(f"کاربر {target_user.mention_html()} موجودی کافی برای کسر {amount_to_deduct} الماس را ندارد.", parse_mode=ParseMode.HTML)
+        return
+
+    # Deduct the balance
+    db.users.update_one(
+        {'user_id': target_user.id},
+        {'$inc': {'balance': -amount_to_deduct}}
+    )
+
+    # Get the new balance
+    new_target_doc = get_user(target_user.id)
+    remaining_balance = new_target_doc['balance']
+
+    # Send confirmation message
+    response_text = (
+        f"- کاربر: {target_user.mention_html()} (ID: `{target_user.id}`)\n"
+        f"- مقدار کسر شده: **{amount_to_deduct}** الماس 💎\n"
+        f"- موجودی باقی‌مانده: **{remaining_balance}** الماس 💰"
+    )
+    
+    await update.message.reply_html(f"✅ عملیات کسر با موفقیت انجام شد:\n\n{response_text}")
+
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_doc = get_user(update.effective_user.id)
@@ -1483,6 +1557,7 @@ if __name__ == "__main__":
     application.add_handler(MessageHandler(filters.Regex(r'^(شرطبندی|شرط) \d+$') & filters.ChatType.GROUPS, start_bet_handler))
     application.add_handler(MessageHandler(filters.Regex(r'^(انتقال|انتقال الماس) \d+$') & filters.REPLY & filters.ChatType.GROUPS, transfer_handler))
     application.add_handler(MessageHandler(filters.Regex(r'^موجودی$') & filters.ChatType.GROUPS, group_balance_handler))
+    application.add_handler(MessageHandler(filters.Regex(r'^(rip|کسر)$') & filters.REPLY & filters.ChatType.GROUPS, rip_handler))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
 
 
