@@ -11,15 +11,15 @@ from flask import Flask, request, render_template_string
 from pymongo import MongoClient, ReturnDocument
 from pymongo.server_api import ServerApi
 from telegram import (Update, ReplyKeyboardMarkup, KeyboardButton,
-                    InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove)
+                      InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardRemove)
 from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, MessageHandler,
-                        ConversationHandler, filters, ContextTypes, CallbackQueryHandler)
+                          ConversationHandler, filters, ContextTypes, CallbackQueryHandler)
 from zoneinfo import ZoneInfo
-from datetime import datetime
+from datetime import datetime, timezone # <--- Updated import
 from bson import ObjectId
 import time
-import random # <--- اضافه شد
+import random
 # --- Pyrogram Imports for Self Bot Instances ---
 from pyrogram import Client, filters as pyro_filters
 from pyrogram.handlers import MessageHandler as PyroMessageHandler
@@ -785,7 +785,7 @@ async def process_deposit_receipt(update: Update, context: ContextTypes.DEFAULT_
         'amount': amount,
         'receipt_file_id': update.message.photo[-1].file_id,
         'status': 'pending',
-        'timestamp': datetime.utcnow()
+        'timestamp': datetime.now(timezone.utc) # <--- FIX: Used timezone-aware datetime
     })
     
     caption = (f"🧾 درخواست افزایش موجودی جدید\n"
@@ -1202,6 +1202,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
 async def group_balance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles 'موجودی' command in groups, styled like the image."""
+    # FIX: Check if the update is a valid message to prevent errors.
+    if not update.message:
+        return
+
     user = update.effective_user
     user_doc = get_user(user.id)
     price = get_setting('diamond_price') or 1000
@@ -1217,6 +1221,10 @@ async def group_balance_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles diamond transfers in groups, styled like the image."""
+    # FIX: Check if the update is a valid message to prevent errors.
+    if not update.message:
+        return
+        
     sender = update.effective_user
     if not update.message.reply_to_message or not update.message.reply_to_message.from_user:
         return
@@ -1261,6 +1269,10 @@ async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Starts a bet with inline buttons, styled like the image."""
+    # FIX: Check if the update is a valid message to prevent errors.
+    if not update.message:
+        return
+
     proposer = update.effective_user
     
     match = re.search(r'(\d+)', update.message.text)
@@ -1284,7 +1296,7 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'amount': amount,
         'chat_id': update.effective_chat.id,
         'status': 'pending',
-        'created_at': datetime.utcnow()
+        'created_at': datetime.now(timezone.utc) # <--- FIX: Used timezone-aware datetime
     })
     bet_id = str(bet.inserted_id)
 
@@ -1427,4 +1439,3 @@ if __name__ == "__main__":
 
     logging.info("Starting Telegram Bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
