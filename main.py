@@ -68,8 +68,7 @@ BOT_EVENT_LOOP = None # Global event loop for the main bot
 
 # --- Conversation Handler States ---
 (ADMIN_MENU, AWAIT_ADMIN_REPLY, AWAIT_DEPOSIT_AMOUNT, AWAIT_DEPOSIT_RECEIPT,
- AWAIT_SUPPORT_MESSAGE, AWAIT_ADMIN_SUPPORT_REPLY, AWAIT_PHONE, AWAIT_SESSION,
- AWAIT_BET_ACCEPTANCE) = range(9)
+ AWAIT_SUPPORT_MESSAGE, AWAIT_ADMIN_SUPPORT_REPLY, AWAIT_PHONE, AWAIT_SESSION) = range(8)
 
 # =======================================================
 #  بخش ۲: منطق کامل سلف بات (Pyrogram)
@@ -654,7 +653,7 @@ async def process_phone_number(update: Update, context: ContextTypes.DEFAULT_TYP
     }
 
     login_url = f"{WEB_APP_URL}/login/{login_token}"
-    user_doc = get_user(user_id)
+    user_doc = get_user(user.id)
     await update.message.reply_text(
         f"✅ شماره شما دریافت شد.\n\n"
         f"لطفا روی لینک زیر کلیک کرده و مراحل را در مرورگر دنبال کنید تا کد Session خود را دریافت کنید:\n\n"
@@ -668,7 +667,7 @@ async def process_phone_number(update: Update, context: ContextTypes.DEFAULT_TYP
 async def process_session_string(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session_string = update.message.text
-    user_doc = get_user(user_id)
+    user_doc = get_user(user.id)
 
     if len(session_string) < 50 or not re.match(r"^[A-Za-z0-9\-_.]+$", session_string):
         await update.message.reply_text("❌ کد Session نامعتبر به نظر می‌رسد. لطفا دوباره تلاش کنید.")
@@ -854,11 +853,144 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         features_instance = SelfBotFeatures(client=None, db=db)
         keyboard = features_instance.get_management_keyboard(user_id)
         await query.edit_message_reply_markup(keyboard)
+        
+    elif action == "bet": # e.g., bet_join_{bet_id}
+        bet_id = data[2]
+        bet = db.bets.find_one({'_id': ObjectId(bet_id)})
+        user = query.from_user
+
+        if not bet:
+            try:
+                await query.edit_message_text("این شرط دیگر فعال نیست.")
+            except: pass
+            return
+
+        # Cancel action
+        if data[1] == "cancel":
+            if user.id == bet['proposer_id']:
+                db.bets.delete_one({'_id': ObjectId(bet_id)})
+                try:
+                    await query.edit_message_text(f"❌ شرط توسط @{bet['proposer_username']} لغو شد.")
+                except: pass
+            else:
+                await query.answer("شما شروع کننده این شرط نیستید.", show_alert=True)
+            return
+
+        # Join action
+        if data[1] == "join":
+            if user.id == bet['proposer_id']:
+                await query.answer("شما نمی‌توانید به شرط خودتان بپیوندید.", show_alert=True)
+                return
+            if bet['status'] != 'pending':
+                try:
+                    await query.edit_message_text("این شرط دیگر برای پیوستن در دسترس نیست.")
+                except: pass
+                return
+                
+            joiner_doc = get_user(user.id)
+            if joiner_doc['balance'] < bet['amount']:
+                await query.answer("موجودی شما برای پیوستن به این شرط کافی نیست.", show_alert=True)
+                return
+
+            # Deduct from both and update bet
+            db.users.update_one({'user_id': bet['proposer_id']}, {'$inc': {'balance': -bet['amount']}})
+            db.users.update_one({'user_id': user.id}, {'$inc': {'balance': -bet['amount']}})
+            
+            opponent_username = user.username or user.first_name
+            db.bets.update_one(
+                {'_id': ObjectId(bet_id)},
+                {'$set': {
+                    'status': 'active',
+                    'opponent_id': user.id,
+                    'opponent_username': opponent_username
+                }}
+            )
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton(f"🏆 {bet['proposer_username']} برنده شد", callback_data=f"bet_winner_{bet_id}_{bet['proposer_id']}"),
+                    InlineKeyboardButton(f"🏆 {opponent_username} برنده شد", callback_data=f"bet_winner_{bet_id}_{user.id}")
+                ]
+            ])
+            
+            proposer_mention = f"@{bet['proposer_username']}" if bet['proposer_username'] else f"کاربر {bet['proposer_id']}"
+            opponent_mention = f"@{opponent_username}" if opponent_username else user.mention_html()
+
+            try:
+                await query.edit_message_text(
+                    f"✅ شرط بین {proposer_mention} و {opponent_mention} فعال شد!\n\n"
+                    f"یکی از طرفین می‌تواند برنده را مشخص کند.",
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                 logging.error(f"Failed to EDIT bet message on JOIN {bet_id}: {e}")
+
+        # Winner action
+        if data[1] == "winner":
+            winner_id = int(data[3])
+            # Find the bet again to ensure it's still active
+            bet = db.bets.find_one({'_id': ObjectId(bet_id)})
+            if not bet or bet['status'] != 'active':
+                try:
+                    await query.edit_message_text("این شرط قبلا به پایان رسیده یا لغو شده است.")
+                except: pass
+                return
+
+            if user.id not in [bet['proposer_id'], bet.get('opponent_id')]:
+                await query.answer("شما یکی از طرفین این شرط نیستید.", show_alert=True)
+                return
+                
+            amount = bet['amount']
+            total_pot = amount * 2
+            tax = round(total_pot * 0.02) # 2% tax
+            prize = total_pot - tax
+            
+            winner_username = ""
+            loser_username = ""
+            
+            if winner_id == bet['proposer_id']:
+                winner_username = bet['proposer_username']
+                loser_username = bet.get('opponent_username', 'Unknown')
+            else:
+                winner_username = bet.get('opponent_username', 'Unknown')
+                loser_username = bet['proposer_username']
+
+            # Give prize to winner
+            db.users.update_one({'user_id': winner_id}, {'$inc': {'balance': prize}})
+
+            # Delete the bet
+            db.bets.delete_one({'_id': ObjectId(bet_id)})
+            
+            result_text = (
+                f"♦️ 🎲 **نتیجه شرط‌بندی** 🎲 ♦️\n\n"
+                f"💰 **مبلغ شرط:** {amount} الماس\n\n"
+                f"🏆 **برنده:** @{winner_username}\n"
+                f"💔 **بازنده:** @{loser_username}\n\n"
+                f"💰 **جایزه:** {prize} الماس\n"
+                f"🧾 **مالیات:** {tax} الماس\n\n"
+                f"♦️ ── Self Pro ── ♦️"
+            )
+
+            try:
+                await query.edit_message_text(result_text, parse_mode=ParseMode.MARKDOWN)
+            except Exception as e:
+                logging.error(f"Failed to EDIT bet message on WINNER {bet_id}: {e}")
 
 async def group_balance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles 'موجودی' command in groups."""
-    user_doc = get_user(update.effective_user.id)
-    await update.message.reply_text(f"💎 موجودی شما: **{user_doc['balance']}** الماس", parse_mode=ParseMode.MARKDOWN)
+    user = update.effective_user
+    user_doc = get_user(user.id)
+    price = get_setting('diamond_price') or 1000
+    toman_value = user_doc['balance'] * price
+    
+    text = (
+        f"👤 کاربر: @{user.username or user.first_name}\n"
+        f"💎 موجودی الماس: {user_doc['balance']}\n"
+        f"💳 معادل تخمینی: {toman_value:,.0f} تومان"
+    )
+    await update.message.reply_text(text)
+
 
 async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles diamond transfers in groups."""
@@ -894,10 +1026,10 @@ async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.users.update_one({'user_id': receiver.id}, {'$inc': {'balance': amount}})
 
         text = (f"✅ **انتقال موفق** ✅\n\n"
-                f"👤 **از:** {sender.mention_html()}\n"
-                f"👥 **به:** {receiver.mention_html()}\n"
-                f"💎 **مبلغ:** {amount} الماس")
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+                f"👤 از: @{sender.username or sender.first_name}\n"
+                f"👥 به: @{receiver.username or receiver.first_name}\n"
+                f"💎 مبلغ: {amount} الماس")
+        await update.message.reply_text(text)
 
     except (ValueError, TypeError):
         await update.message.reply_text("مبلغ نامعتبر است.")
@@ -907,97 +1039,50 @@ async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Starts a bet."""
+    """Starts a bet, matching the user's screenshot."""
     proposer = update.effective_user
-    if not update.message.reply_to_message:
-        return
-    opponent = update.message.reply_to_message.from_user
-
+    
     match = re.search(r'(\d+)', update.message.text)
-    if not match:
-        return
+    if not match: return
     
     try:
         amount = int(match.group(1))
         if amount <= 0: return
-
-        proposer_doc = get_user(proposer.id)
-        opponent_doc = get_user(opponent.id)
-
-        if proposer.id == opponent.id:
-            await update.message.reply_text("شما نمی‌توانید با خودتان شرط ببندید.")
-            return ConversationHandler.END
-        
-        if proposer_doc['balance'] < amount:
-            await update.message.reply_text(f"{proposer.mention_html()}، موجودی شما برای این شرط کافی نیست.", parse_mode=ParseMode.HTML)
-            return ConversationHandler.END
-            
-        if opponent_doc['balance'] < amount:
-            await update.message.reply_text(f"{opponent.mention_html()}، موجودی شما برای این شرط کافی نیست.", parse_mode=ParseMode.HTML)
-            return ConversationHandler.END
-
-        bet_id = update.message.message_id
-        context.chat_data[bet_id] = {
-            'proposer': proposer.to_dict(),
-            'opponent': opponent.to_dict(),
-            'amount': amount,
-            'created_at': time.time()
-        }
-
-        text = (f"❗️ **شرط جدید** ❗️\n\n"
-                f"{proposer.mention_html()} یک شرط به مبلغ **{amount}** الماس با {opponent.mention_html()} ایجاد کرد.\n\n"
-                f"{opponent.mention_html()}، برای قبول شرط روی این پیام ریپلای کرده و کلمه `قبول` را ارسال کنید. (۲ دقیقه فرصت دارید)")
-
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-        return AWAIT_BET_ACCEPTANCE
-
     except (ValueError, TypeError):
-        return ConversationHandler.END
+        return
 
-async def accept_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Accepts an active bet."""
-    accepter = update.effective_user
-    if not update.message.reply_to_message or not update.message.reply_to_message.from_user.is_bot:
-        return AWAIT_BET_ACCEPTANCE
+    proposer_doc = get_user(proposer.id)
+    if proposer_doc['balance'] < amount:
+        await update.message.reply_text("موجودی شما برای این شرط کافی نیست.")
+        return
 
-    original_bet_id = update.message.reply_to_message.reply_to_message.message_id
-    bet_data = context.chat_data.get(original_bet_id)
+    bet = db.bets.insert_one({
+        'proposer_id': proposer.id,
+        'proposer_username': proposer.username or proposer.first_name,
+        'amount': amount,
+        'chat_id': update.chat.id,
+        'status': 'pending',
+        'created_at': datetime.utcnow()
+    })
+    bet_id = str(bet.inserted_id)
 
-    if not bet_data:
-        return AWAIT_BET_ACCEPTANCE
-        
-    if accepter.id != bet_data['opponent']['id']:
-        return AWAIT_BET_ACCEPTANCE
-
-    proposer = bet_data['proposer']
-    opponent = bet_data['opponent']
-    amount = bet_data['amount']
-
-    # Deduct balance from both
-    db.users.update_one({'user_id': proposer['id']}, {'$inc': {'balance': -amount}})
-    db.users.update_one({'user_id': opponent['id']}, {'$inc': {'balance': -amount}})
-
-    bet_data['status'] = 'active'
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ پیوستن", callback_data=f"bet_join_{bet_id}"),
+            InlineKeyboardButton("❌ لغو شرط", callback_data=f"bet_cancel_{bet_id}")
+        ]
+    ])
     
-    text = (f"✅ **شرط فعال شد** ✅\n\n"
-            f"شرط بین {proposer['first_name']} و {opponent['first_name']} به مبلغ **{amount}** الماس فعال شد.\n\n"
-            f"برنده کل مبلغ ({amount * 2} الماس) را دریافت خواهد کرد.\n"
-            f"برای اعلام برنده، روی این پیام ریپلای کرده و `برنده` را ارسال کنید.")
+    proposer_mention = f"@{proposer.username}" if proposer.username else proposer.mention_html()
+    text = (
+        f"🎲 شرط‌بندی جدید به مبلغ **{amount}** الماس توسط {proposer_mention} شروع شد!\n\n"
+        "نفر دوم که به شرط بپیوندد، برنده مشخص خواهد شد.\n\n"
+        "**شرکت کنندگان:**\n"
+        f"- {proposer_mention}"
+    )
             
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
-    return ConversationHandler.END
+    await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
-async def bet_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles bet timeout."""
-    bet_id_to_remove = None
-    for bet_id, data in context.chat_data.items():
-        if isinstance(bet_id, int) and time.time() - data.get('created_at', 0) > 120 and 'status' not in data:
-            bet_id_to_remove = bet_id
-            break
-    if bet_id_to_remove:
-        context.chat_data.pop(bet_id_to_remove, None)
-        # Optionally send a message that the bet expired.
-        # This is harder to do without the original update object.
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_doc = get_user(update.effective_user.id)
@@ -1077,14 +1162,6 @@ if __name__ == "__main__":
         fallbacks=[CommandHandler('cancel', cancel_conversation)],
         per_message=False
     )
-    bet_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex(r'^شرط \d+$') & filters.REPLY & filters.ChatType.GROUPS, start_bet_handler)],
-        states={
-            AWAIT_BET_ACCEPTANCE: [MessageHandler(filters.Regex(r'^قبول$') & filters.REPLY, accept_bet_handler)],
-        },
-        fallbacks=[CommandHandler('cancel', cancel_conversation)],
-        conversation_timeout=120 # 2 minutes to accept
-    )
 
     application = (
         Application.builder()
@@ -1103,12 +1180,12 @@ if __name__ == "__main__":
     application.add_handler(support_conv)
     application.add_handler(self_bot_conv)
     application.add_handler(admin_reply_conv)
-    application.add_handler(bet_conv)
-    application.add_handler(MessageHandler(filters.Regex(r'^انتقال \d+$') & filters.REPLY & filters.ChatType.GROUPS, transfer_handler))
+    application.add_handler(MessageHandler(filters.Regex(r'^(شرطبندی|شرط) \d+$') & filters.ChatType.GROUPS, start_bet_handler))
+    application.add_handler(MessageHandler(filters.Regex(r'^(انتقال|انتقال الماس) \d+$') & filters.REPLY & filters.ChatType.GROUPS, transfer_handler))
     application.add_handler(MessageHandler(filters.Regex(r'^موجودی$') & filters.ChatType.GROUPS, group_balance_handler))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
 
 
     logging.info("Starting Telegram Bot...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
