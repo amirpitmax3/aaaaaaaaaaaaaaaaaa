@@ -41,7 +41,7 @@ logging.getLogger("pyrogram").setLevel(logging.WARNING)
 
 
 # --- Environment Variables & Constants ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8233582209:AAHKPQX-349tAfBOCFWbRRqcpD-QbVrDzQ0")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8201277186:AAEUNypEGr_D3NuBsJ4RnexFv0u5ABrd5RM")
 OWNER_ID = int(os.environ.get("OWNER_ID", 7423552124))
 API_ID = int(os.environ.get("API_ID", 28190856))
 API_HASH = os.environ.get("API_HASH", "6b9b5309c2a211b526c6ddad6eabb521")
