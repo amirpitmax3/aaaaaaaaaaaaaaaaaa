@@ -1178,11 +1178,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             # 6. Delete the bet from the database
             db.bets.delete_one({'_id': ObjectId(bet_id)})
 
+            # Escape underscores for Markdown to prevent parsing errors
+            safe_winner_username = str(winner_username).replace("_", "\\_")
+            safe_loser_username = str(loser_username).replace("_", "\\_")
+
             # 7. Construct the final, compact result message with tax details
             result_text = (
                 f"**🏁 نتیجه شرط‌بندی 🏁**\n\n"
-                f"**برنده:** 🏆 @{winner_username}\n"
-                f"**بازنده:** 💔 @{loser_username}\n\n"
+                f"**برنده:** 🏆 @{safe_winner_username}\n"
+                f"**بازنده:** 💔 @{safe_loser_username}\n\n"
                 f"💰 **مبلغ کل:** {total_pot} الماس\n"
                 f"🧾 **مالیات ({BET_TAX_RATE:.0%}):** {tax} الماس\n"
                 f"🎁 **جایزه نهایی:** {prize} الماس"
