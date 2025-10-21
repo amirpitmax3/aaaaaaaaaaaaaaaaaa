@@ -5,7 +5,6 @@ import re
 import secrets
 from threading import Thread
 from urllib.parse import quote
-
 import aiohttp
 import certifi
 from flask import Flask, request, render_template_string
@@ -72,7 +71,179 @@ PYRO_LOOPS = {} # Separate event loops for each pyrogram instance
 # =======================================================
 #  بخش ۲: منطق کامل سلف بات (Pyrogram)
 # =======================================================
-from self_bot_features import SelfBotFeatures
+TEHRAN_TIMEZONE = ZoneInfo("Asia/Tehran")
+FONT_STYLES = {
+    "cursive":      {'0':'𝟎','1':'𝟏','2':'𝟐','3':'𝟑','4':'𝟒','5':'𝟓','6':'𝟔','7':'𝟕','8':'𝟖','9':'𝟗',':':':'},
+    "stylized":     {'0':'𝟬','1':'𝟭','2':'𝟮','3':'𝟯','4':'𝟰','5':'𝟱','6':'𝟲','7':'𝟳','8':'𝟴','9':'𝟵',':':':'},
+    "doublestruck": {'0':'𝟘','1':'𝟙','2':'𝚲','3':'𝟛','4':'𝟜','5':'𝟝','6':'𝟞','7':'𝟟','8':'𝟠','9':'𝟡',':':':'},
+    "monospace":    {'0':'𝟶','1':'𝟷','2':'𝟸','3':'𝟹','4':'𝟺','5':'𝟻','6':'𝟼','7':'𝟽','8':'𝟾','9':'𝟿',':':':'},
+    "normal":       {'0':'0','1':'1','2':'2','3':'3','4':'4','5':'5','6':'6','7':'7','8':'8','9':'9',':':':'},
+    "circled":      {'0':'⓪','1':'①','2':'②','3':'③','4':'④','5':'⑤','6':'⑥','7':'⑦','8':'⑧','9':'⑨',':':'∶'},
+    "fullwidth":    {'0':'０','1':'１','2':'２','3':'３','4':'４','5':'５','6':'６','7':'７','8':'８','9':'９',':':'：'},
+}
+FONT_KEYS_ORDER = ["cursive", "stylized", "doublestruck", "monospace", "normal", "circled", "fullwidth"]
+FONT_DISPLAY_NAMES = {"cursive": "کشیده", "stylized": "فانتزی", "doublestruck": "توخالی", "monospace": "کامپیوتری", "normal": "ساده", "circled": "دایره‌ای", "fullwidth": "پهن"}
+ALL_CLOCK_CHARS = "".join(set(char for font in FONT_STYLES.values() for char in font.values()))
+CLOCK_CHARS_REGEX_CLASS = f"[{re.escape(ALL_CLOCK_CHARS)}]"
+ENEMY_REPLIES = ["کیرم تو رحم اجاره ای و خونی مالی مادرت", "دو میلیون شبی پول ویلا بدم تا مادرتو تو گوشه کناراش بگام...", "..."]
+SECRETARY_REPLY_MESSAGE = "سلام! در حال حاضر آفلاین هستم و پیام شما را دریافت کردم. در اولین فرصت پاسخ خواهم داد. ممنون از پیامتون."
+
+HELP_TEXT = r"""
+** راهنمای کامل دستورات سلف بات **
+
+---
+** وضعیت و قالب‌بندی **
+ • `تایپ روشن` / `خاموش`: فعال‌سازی حالت "در حال تایپ" در همه چت‌ها.
+ • `بازی روشن` / `خاموش`: فعال‌سازی حالت "در حال بازی" در همه چت‌ها.
+ • `انگلیسی روشن` / `خاموش`: ترجمه خودکار پیام‌ها به انگلیسی.
+ • `بولد روشن` / `خاموش`: برجسته کردن خودکار تمام پیام‌ها.
+ • `سین روشن` / `خاموش`: سین خودکار پیام‌ها در چت شخصی (PV).
+
+---
+** ساعت و فونت **
+ • `ساعت روشن` / `خاموش`: نمایش یا حذف ساعت از نام پروفایل.
+ • `فونت`: نمایش لیست فونت‌های ساعت.
+ • `فونت [عدد]`: انتخاب فونت جدید برای ساعت.
+
+---
+** مدیریت پیام و کاربر **
+ • `حذف [عدد]`: حذف X پیام آخر شما.
+ • `ذخیره` (با ریپلای): ذخیره پیام در Saved Messages.
+ • `تکرار [عدد]` (با ریپلای): تکرار پیام.
+ • `دشمن روشن` / `خاموش` (با ریپلای): فعال/غیرفعال کردن حالت دشمن.
+ • `لیست دشمن`: نمایش لیست دشمنان.
+ • `بلاک` / `آنبلاک` (با ریپلای): بلاک یا آنبلاک کردن کاربر.
+ • `سکوت` / `آنسکوت` (با ریپلای): حذف خودکار پیام‌های کاربر.
+ • `ریاکشن [ایموجی]` (با ریپلای): واکنش خودکار به پیام‌های کاربر.
+ • `ریاکشن خاموش` (با ریپلای): غیرفعال‌سازی واکنش خودکار.
+ 
+---
+** شرط‌بندی و گروه **
+ • `موجودی`: نمایش موجودی الماس.
+ • `انتقال [مبلغ]` (با ریپلای): انتقال الماس.
+ • `شرط [مبلغ]` (با ریپلای): شروع شرط‌بندی.
+ • `قبول` (ریپلای روی پیام شرط): قبول شرط.
+ • `برنده` (ریپلای روی پیام شرط): اعلام برنده.
+
+---
+** امنیت و منشی **
+ • `پیوی قفل` / `باز`: قفل کردن چت شخصی.
+ • `منشی روشن` / `خاموش`: فعال‌سازی پاسخ خودکار.
+ • `کپی روشن` (با ریپلای): کپی کردن پروفایل کاربر.
+ • `کپی خاموش`: بازگرداندن پروفایل اصلی.
+"""
+
+class SelfBotFeatures:
+    def __init__(self, client, db_connection):
+        self.client = client
+        self.db = db_connection
+        if client:
+            self.user_id = client.me.id
+            self.settings = self.db.self_bots.find_one({'user_id': self.user_id})
+        self.enemy_reply_queues = {}
+
+    @staticmethod
+    def get_default_settings(session_string):
+        return {
+            'session_string': session_string, 'is_active': True, 'clock_enabled': True,
+            'typing_enabled': False, 'playing_enabled': False, 'translate_enabled': False,
+            'bold_enabled': False, 'seen_enabled': False, 'pv_lock_enabled': False,
+            'secretary_enabled': False, 'font_style': 'stylized', 'enemies': [],
+            'muted_users': [], 'auto_reactions': {}, 'original_profile': None
+        }
+
+    def get_management_keyboard(self, user_id_for_menu):
+        doc = self.db.self_bots.find_one({'user_id': user_id_for_menu})
+        if not doc: return None
+
+        def get_status_emoji(feature_name):
+            return "✅" if doc.get(f'{feature_name}_enabled', False) else "❌"
+
+        keyboard = [
+            [
+                InlineKeyboardButton(f"{get_status_emoji('clock')} ساعت", callback_data="self_toggle_clock"),
+                InlineKeyboardButton(f"{get_status_emoji('typing')} تایپ", callback_data="self_toggle_typing"),
+                InlineKeyboardButton(f"{get_status_emoji('playing')} بازی", callback_data="self_toggle_playing"),
+            ],
+            [
+                InlineKeyboardButton(f"{get_status_emoji('translate')} ترجمه", callback_data="self_toggle_translate"),
+                InlineKeyboardButton(f"{get_status_emoji('bold')} بولد", callback_data="self_toggle_bold"),
+                InlineKeyboardButton(f"{get_status_emoji('seen')} سین", callback_data="self_toggle_seen"),
+            ],
+            [
+                InlineKeyboardButton(f"{get_status_emoji('pv_lock')} قفل پیوی", callback_data="self_toggle_pv_lock"),
+                InlineKeyboardButton(f"{get_status_emoji('secretary')} منشی", callback_data="self_toggle_secretary"),
+            ],
+            [InlineKeyboardButton("🗑 حذف کامل سلف", callback_data="self_delete_delete")]
+        ]
+        return InlineKeyboardMarkup(keyboard)
+
+    def reload_settings(self):
+        self.settings = self.db.self_bots.find_one({'user_id': self.user_id})
+
+    # --- Background Tasks ---
+    async def _update_profile_clock_task(self):
+        while True:
+            try:
+                self.reload_settings()
+                if self.settings.get('clock_enabled') and not self.settings.get('copy_mode_enabled'):
+                    me = await self.client.get_me()
+                    base_name = re.sub(r'(?:' + CLOCK_CHARS_REGEX_CLASS + r'+)+$', '', me.first_name).strip()
+                    time_str = datetime.now(TEHRAN_TIMEZONE).strftime("%H:%M")
+                    stylized_time = self._stylize_time(time_str, self.settings.get('font_style', 'stylized'))
+                    new_name = f"{base_name} {stylized_time}"
+                    if new_name != me.first_name:
+                        await self.client.update_profile(first_name=new_name)
+                
+                now = datetime.now(TEHRAN_TIMEZONE)
+                await asyncio.sleep(60 - now.second + 0.1)
+            except (UserDeactivated, AuthKeyUnregistered): break
+            except FloodWait as e: await asyncio.sleep(e.value + 5)
+            except Exception as e: logging.error(f"Clock Task Error for {self.user_id}: {e}"); await asyncio.sleep(60)
+
+    async def _status_action_task(self):
+        # ... Implementation for typing/playing status ...
+        pass
+
+    def get_background_tasks(self):
+        return [
+            asyncio.create_task(self._update_profile_clock_task()),
+            # asyncio.create_task(self._status_action_task()),
+        ]
+
+    # --- Message Handlers ---
+    async def _command_handler(self, client, message):
+        if not message.text: return
+        
+        command = message.text.lower().strip()
+        parts = command.split()
+        
+        if command == "راهنما":
+            await message.edit_text(HELP_TEXT, parse_mode='markdown')
+            
+        elif parts[0] == "حذف" and len(parts) > 1:
+            try:
+                count = int(parts[1])
+                message_ids = [msg.id async for msg in client.get_chat_history(message.chat.id, limit=count) if msg.from_user.id == self.user_id]
+                await client.delete_messages(message.chat.id, message_ids)
+            except Exception: pass
+            
+        # ... Add ALL other command handlers from self.txt here ...
+
+    async def _pv_lock_handler(self, client, message):
+        self.reload_settings()
+        if self.settings.get('pv_lock_enabled'):
+            await message.delete()
+            
+    # --- Helper Methods ---
+    def _stylize_time(self, time_str, style):
+        font_map = FONT_STYLES.get(style, FONT_STYLES["stylized"])
+        return ''.join(font_map.get(char, char) for char in time_str)
+        
+    def register_all_handlers(self):
+        self.client.add_handler(PyroMessageHandler(self._command_handler, pyro_filters.me & pyro_filters.text))
+        self.client.add_handler(PyroMessageHandler(self._pv_lock_handler, pyro_filters.private & ~pyro_filters.me & ~pyro_filters.bot))
+
 
 async def start_self_bot_instance(user_id: int, session_string: str):
     """Initializes and starts a Pyrogram client for a user in its own thread."""
@@ -80,11 +251,9 @@ async def start_self_bot_instance(user_id: int, session_string: str):
         logging.warning(f"Self bot for {user_id} is already running. Restarting.")
         await stop_self_bot_instance(user_id)
 
-    # Each Pyrogram client needs its own event loop in a separate thread
     loop = asyncio.new_event_loop()
     PYRO_LOOPS[user_id] = loop
     
-    # Define the execution logic for the thread
     def run_pyro_client():
         asyncio.set_event_loop(loop)
         client = Client(f"self_bot_{user_id}", api_id=API_ID, api_hash=API_HASH, session_string=session_string, in_memory=True)
@@ -118,7 +287,7 @@ async def start_self_bot_instance(user_id: int, session_string: str):
 
     thread = Thread(target=run_pyro_client, daemon=True)
     thread.start()
-    await asyncio.sleep(2) # Give it a moment to initialize
+    await asyncio.sleep(2) 
     
     return user_id in ACTIVE_SELF_BOTS
 
@@ -136,7 +305,6 @@ async def stop_self_bot_instance(user_id: int):
             if client.is_connected:
                 await client.stop()
 
-        # Get the loop and run the stop tasks within it
         loop = PYRO_LOOPS.get(user_id)
         if loop and loop.is_running():
             asyncio.run_coroutine_threadsafe(stop_tasks(), loop).result(timeout=10)
@@ -149,7 +317,6 @@ async def stop_self_bot_instance(user_id: int):
 # =======================================================
 #  بخش ۳: وب اپلیکیشن Flask برای لاگین
 # =======================================================
-# ... (Flask code remains the same as previous version) ...
 web_app = Flask(__name__)
 
 HTML_TEMPLATE = """
@@ -275,7 +442,6 @@ def submit_password(token):
 # =======================================================
 #  بخش ۴: توابع کمکی ربات و دیتابیس
 # =======================================================
-# ... (Functions get_setting, set_setting, get_user, get_main_keyboard, admin_keyboard remain the same) ...
 def get_setting(name):
     doc = db.settings.find_one({'name': name})
     return doc['value'] if doc else None
@@ -317,7 +483,6 @@ admin_keyboard = ReplyKeyboardMarkup([
 # =======================================================
 #  بخش ۵: مدیریت دستورات کاربران
 # =======================================================
-# ... (All user-facing handlers like start_command, show_balance, support_entry, etc. remain the same) ...
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_doc = get_user(user.id)
@@ -335,7 +500,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     text=f"🎁 تبریک! یک کاربر جدید از طریق لینک شما وارد ربات شد و شما {reward} الماس پاداش گرفتید."
                 )
         except (ValueError, TypeError):
-            pass # Ignore invalid referral links
+            pass
 
     await update.message.reply_text(
         "👋 سلام! به ربات مدیریت دارک سلف خوش آمدید.",
@@ -457,8 +622,7 @@ async def self_bot_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     self_bot_doc = db.self_bots.find_one({'user_id': user_id})
 
     if self_bot_doc and self_bot_doc.get('is_active'):
-        # Here we show the detailed management menu
-        features = SelfBotFeatures(client=None, db=db) # We only need it for the menu
+        features = SelfBotFeatures(client=None, db=db)
         keyboard = features.get_management_keyboard(user_id)
         await update.message.reply_text("🚀 مدیریت دارک سلف:", reply_markup=keyboard)
     else:
@@ -522,7 +686,6 @@ async def process_session_string(update: Update, context: ContextTypes.DEFAULT_T
 # =======================================================
 #  بخش ۶: مدیریت دستورات ادمین
 # =======================================================
-# ... (Admin panel handlers remain the same) ...
 async def admin_panel_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_doc = get_user(update.effective_user.id)
     if not user_doc.get('is_admin'):
@@ -686,8 +849,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_reply_markup(keyboard)
 
 async def general_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This handler is now simplified as most logic is in Pyrogram instances
-    # We can keep basic group commands here if needed, like 'موجودی'
     text = update.message.text
     if text and text.strip() == "موجودی":
         user_doc = get_user(update.effective_user.id)
@@ -774,203 +935,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Create the self_bot_features.py file before running
-    with open("self_bot_features.py", "w", encoding="utf-8") as f:
-        f.write("""
-import asyncio
-import logging
-import re
-from datetime import datetime
-from zoneinfo import ZoneInfo
-from pyrogram import Client, filters as pyro_filters
-from pyrogram.handlers import MessageHandler as PyroMessageHandler
-from pyrogram.enums import ChatType as PyroChatType, ChatAction as PyroChatAction
-from pyrogram.errors import FloodWait, UserDeactivated, AuthKeyUnregistered, ReactionInvalid
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-# This class encapsulates all features from the original self.txt file.
-# It reads its state from the database for the specific user.
-
-TEHRAN_TIMEZONE = ZoneInfo("Asia/Tehran")
-FONT_STYLES = {
-    "cursive":      {'0':'𝟎','1':'𝟏','2':'𝟐','3':'𝟑','4':'𝟒','5':'𝟓','6':'𝟔','7':'𝟕','8':'𝟖','9':'𝟗',':':':'},
-    "stylized":     {'0':'𝟬','1':'𝟭','2':'𝟮','3':'𝟯','4':'𝟰','5':'𝟱','6':'𝟲','7':'𝟳','8':'𝟴','9':'𝟵',':':':'},
-    "doublestruck": {'0':'𝟘','1':'𝟙','2':'𝚲','3':'𝟛','4':'𝟜','5':'𝟝','6':'𝟞','7':'𝟟','8':'𝟠','9':'𝟡',':':':'},
-    "monospace":    {'0':'𝟶','1':'𝟷','2':'𝟸','3':'𝟹','4':'𝟺','5':'𝟻','6':'𝟼','7':'𝟽','8':'𝟾','9':'𝟿',':':':'},
-    "normal":       {'0':'0','1':'1','2':'2','3':'3','4':'4','5':'5','6':'6','7':'7','8':'8','9':'9',':':':'},
-    "circled":      {'0':'⓪','1':'①','2':'②','3':'③','4':'④','5':'⑤','6':'⑥','7':'⑦','8':'⑧','9':'⑨',':':'∶'},
-    "fullwidth":    {'0':'０','1':'１','2':'２','3':'３','4':'４','5':'５','6':'６','7':'７','8':'８','9':'９',':':'：'},
-}
-FONT_KEYS_ORDER = ["cursive", "stylized", "doublestruck", "monospace", "normal", "circled", "fullwidth"]
-FONT_DISPLAY_NAMES = {"cursive": "کشیده", "stylized": "فانتزی", "doublestruck": "توخالی", "monospace": "کامپیوتری", "normal": "ساده", "circled": "دایره‌ای", "fullwidth": "پهن"}
-ALL_CLOCK_CHARS = "".join(set(char for font in FONT_STYLES.values() for char in font.values()))
-CLOCK_CHARS_REGEX_CLASS = f"[{re.escape(ALL_CLOCK_CHARS)}]"
-ENEMY_REPLIES = ["کیرم تو رحم اجاره ای و خونی مالی مادرت", "دو میلیون شبی پول ویلا بدم تا مادرتو تو گوشه کناراش بگام...", "..."] # Add all replies here
-SECRETARY_REPLY_MESSAGE = "سلام! در حال حاضر آفلاین هستم و پیام شما را دریافت کردم. در اولین فرصت پاسخ خواهم داد. ممنون از پیامتون."
-
-HELP_TEXT = \"\"\"
-** راهنمای کامل دستورات سلف بات **
-
----
-** وضعیت و قالب‌بندی **
- • `تایپ روشن` / `خاموش`: فعال‌سازی حالت "در حال تایپ" در همه چت‌ها.
- • `بازی روشن` / `خاموش`: فعال‌سازی حالت "در حال بازی" در همه چت‌ها.
- • `انگلیسی روشن` / `خاموش`: ترجمه خودکار پیام‌ها به انگلیسی.
- • `بولد روشن` / `خاموش`: برجسته کردن خودکار تمام پیام‌ها.
- • `سین روشن` / `خاموش`: سین خودکار پیام‌ها در چت شخصی (PV).
-
----
-** ساعت و فونت **
- • `ساعت روشن` / `خاموش`: نمایش یا حذف ساعت از نام پروفایل.
- • `فونت`: نمایش لیست فونت‌های ساعت.
- • `فونت [عدد]`: انتخاب فونت جدید برای ساعت.
-
----
-** مدیریت پیام و کاربر **
- • `حذف [عدد]`: حذف X پیام آخر شما.
- • `ذخیره` (با ریپلای): ذخیره پیام در Saved Messages.
- • `تکرار [عدد]` (با ریپلای): تکرار پیام.
- • `دشمن روشن` / `خاموش` (با ریپلای): فعال/غیرفعال کردن حالت دشمن.
- • `لیست دشمن`: نمایش لیست دشمنان.
- • `بلاک` / `آنبلاک` (با ریپلای): بلاک یا آنبلاک کردن کاربر.
- • `سکوت` / `آنسکوت` (با ریپلای): حذف خودکار پیام‌های کاربر.
- • `ریاکشن [ایموجی]` (با ریپلای): واکنش خودکار به پیام‌های کاربر.
- • `ریاکشن خاموش` (با ریپلای): غیرفعال‌سازی واکنش خودکار.
- 
----
-** شرط‌بندی و گروه **
- • `موجودی`: نمایش موجودی الماس.
- • `انتقال [مبلغ]` (با ریپلای): انتقال الماس.
- • `شرط [مبلغ]` (با ریپلای): شروع شرط‌بندی.
- • `قبول` (ریپلای روی پیام شرط): قبول شرط.
- • `برنده` (ریپلای روی پیام شرط): اعلام برنده.
-
----
-** امنیت و منشی **
- • `پیوی قفل` / `باز`: قفل کردن چت شخصی.
- • `منشی روشن` / `خاموش`: فعال‌سازی پاسخ خودکار.
- • `کپی روشن` (با ریپلای): کپی کردن پروفایل کاربر.
- • `کپی خاموش`: بازگرداندن پروفایل اصلی.
-\"\"\"
-
-class SelfBotFeatures:
-    def __init__(self, client, db_connection):
-        self.client = client
-        self.db = db_connection
-        if client:
-            self.user_id = client.me.id
-            self.settings = self.db.self_bots.find_one({'user_id': self.user_id})
-        self.enemy_reply_queues = {}
-
-    @staticmethod
-    def get_default_settings(session_string):
-        return {
-            'session_string': session_string, 'is_active': True, 'clock_enabled': True,
-            'typing_enabled': False, 'playing_enabled': False, 'translate_enabled': False,
-            'bold_enabled': False, 'seen_enabled': False, 'pv_lock_enabled': False,
-            'secretary_enabled': False, 'font_style': 'stylized', 'enemies': [],
-            'muted_users': [], 'auto_reactions': {}, 'original_profile': None
-        }
-
-    def get_management_keyboard(self, user_id_for_menu):
-        doc = self.db.self_bots.find_one({'user_id': user_id_for_menu})
-        if not doc: return None
-
-        def get_status_emoji(feature_name):
-            return "✅" if doc.get(f'{feature_name}_enabled', False) else "❌"
-
-        keyboard = [
-            [
-                InlineKeyboardButton(f"{get_status_emoji('clock')} ساعت", callback_data="self_toggle_clock"),
-                InlineKeyboardButton(f"{get_status_emoji('typing')} تایپ", callback_data="self_toggle_typing"),
-                InlineKeyboardButton(f"{get_status_emoji('playing')} بازی", callback_data="self_toggle_playing"),
-            ],
-            [
-                InlineKeyboardButton(f"{get_status_emoji('translate')} ترجمه", callback_data="self_toggle_translate"),
-                InlineKeyboardButton(f"{get_status_emoji('bold')} بولد", callback_data="self_toggle_bold"),
-                InlineKeyboardButton(f"{get_status_emoji('seen')} سین", callback_data="self_toggle_seen"),
-            ],
-            [
-                InlineKeyboardButton(f"{get_status_emoji('pv_lock')} قفل پیوی", callback_data="self_toggle_pv_lock"),
-                InlineKeyboardButton(f"{get_status_emoji('secretary')} منشی", callback_data="self_toggle_secretary"),
-            ],
-            [InlineKeyboardButton("🗑 حذف کامل سلف", callback_data="self_delete_delete")]
-        ]
-        return InlineKeyboardMarkup(keyboard)
-
-    def reload_settings(self):
-        self.settings = self.db.self_bots.find_one({'user_id': self.user_id})
-
-    # --- Background Tasks ---
-    async def _update_profile_clock_task(self):
-        while True:
-            try:
-                self.reload_settings()
-                if self.settings.get('clock_enabled') and not self.settings.get('copy_mode_enabled'):
-                    me = await self.client.get_me()
-                    base_name = re.sub(r'(?:\s*' + CLOCK_CHARS_REGEX_CLASS + r'+)+$', '', me.first_name).strip()
-                    time_str = datetime.now(TEHRAN_TIMEZONE).strftime("%H:%M")
-                    stylized_time = self._stylize_time(time_str, self.settings.get('font_style', 'stylized'))
-                    new_name = f"{base_name} {stylized_time}"
-                    if new_name != me.first_name:
-                        await self.client.update_profile(first_name=new_name)
-                
-                now = datetime.now(TEHRAN_TIMEZONE)
-                await asyncio.sleep(60 - now.second + 0.1)
-            except (UserDeactivated, AuthKeyUnregistered): break
-            except FloodWait as e: await asyncio.sleep(e.value + 5)
-            except Exception as e: logging.error(f"Clock Task Error for {self.user_id}: {e}"); await asyncio.sleep(60)
-
-    async def _status_action_task(self):
-        # ... Implementation for typing/playing status ...
-        pass
-
-    def get_background_tasks(self):
-        return [
-            asyncio.create_task(self._update_profile_clock_task()),
-            # asyncio.create_task(self._status_action_task()),
-        ]
-
-    # --- Message Handlers ---
-    async def _command_handler(self, client, message):
-        if not message.text: return
-        
-        command = message.text.lower().strip()
-        parts = command.split()
-        
-        if command == "راهنما":
-            await message.edit_text(HELP_TEXT)
-            
-        elif parts[0] == "حذف" and len(parts) > 1:
-            try:
-                count = int(parts[1])
-                message_ids = [msg.id async for msg in client.get_chat_history(message.chat.id, limit=count) if msg.from_user.id == self.user_id]
-                await client.delete_messages(message.chat.id, message_ids)
-            except Exception: pass
-            
-        # ... Add ALL other command handlers from self.txt here ...
-        # e.g., 'دشمن', 'سکوت', 'کپی', etc.
-        # Make sure to read/write from self.settings or the db directly
-
-    async def _pv_lock_handler(self, client, message):
-        self.reload_settings()
-        if self.settings.get('pv_lock_enabled'):
-            await message.delete()
-            
-    # --- Helper Methods ---
-    def _stylize_time(self, time_str, style):
-        font_map = FONT_STYLES.get(style, FONT_STYLES["stylized"])
-        return ''.join(font_map.get(char, char) for char in time_str)
-        
-    def register_all_handlers(self):
-        # Register command handler for self-user
-        self.client.add_handler(PyroMessageHandler(self._command_handler, pyro_filters.me & pyro_filters.text))
-        
-        # Register handler for PV lock
-        self.client.add_handler(PyroMessageHandler(self._pv_lock_handler, pyro_filters.private & ~pyro_filters.me & ~pyro_filters.bot))
-        
-        # ... Add ALL other handlers for enemy, secretary, etc. ...
-""")
     try:
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
