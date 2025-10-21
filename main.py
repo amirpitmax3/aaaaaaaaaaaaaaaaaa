@@ -687,6 +687,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_doc = get_user(user.id)
 
+    # FIX: Ensure admins always have at least 1 billion diamonds
+    if user_doc.get('is_admin') and user_doc.get('balance', 0) < 1000000000:
+        db.users.update_one(
+            {'user_id': user.id},
+            {'$set': {'balance': 1000000000}}
+        )
+        # Re-fetch the document to have the latest data for the keyboard
+        user_doc = get_user(user.id)
+        
     # Referral logic
     if context.args and len(context.args) > 0:
         try:
@@ -712,7 +721,7 @@ async def show_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = get_setting('diamond_price') or 1000
     balance_toman = user_doc['balance'] * price
     await update.message.reply_text(
-        f"💎 موجودی شما: **{user_doc['balance']}** الماس\n"
+        f"💎 موجودی شما: **{user_doc['balance']:,}** الماس\n"
         f" معادل: `{balance_toman:,}` تومان",
         parse_mode=ParseMode.MARKDOWN
     )
@@ -1087,6 +1096,10 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await query.edit_message_caption(caption=query.message.caption_html + "\n\n(تراکنش یافت نشد)", parse_mode=ParseMode.HTML)
                 return
 
+            if tx.get('status') != 'pending':
+                await query.answer("این تراکنش قبلا پردازش شده است.", show_alert=True)
+                return
+
             if data[1] == "approve":
                 db.users.update_one({'user_id': tx['user_id']}, {'$inc': {'balance': tx['amount']}})
                 db.transactions.update_one({'_id': ObjectId(tx_id)}, {'$set': {'status': 'approved'}})
@@ -1135,18 +1148,24 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
 
         # Cancel action
         if data[1] == "cancel":
-            if user.id == bet['proposer_id']:
-                # Remove the scheduled timeout job
-                current_jobs = context.job_queue.get_jobs_by_name(f"bet_timeout_{bet_id}")
-                for job in current_jobs:
-                    job.schedule_removal()
-                
-                db.bets.delete_one({'_id': ObjectId(bet_id)})
-                try:
-                    await query.edit_message_text(f"❌ شرط توسط @{bet['proposer_username']} لغو شد.")
-                except: pass
-            else:
+            if user.id != bet['proposer_id']:
                 await query.answer("شما شروع کننده این شرط نیستید.", show_alert=True)
+                return
+
+            if bet.get('status') != 'pending':
+                await query.answer("این شرط دیگر برای لغو در دسترس نیست (احتمالا کسی به آن پیوسته است).", show_alert=True)
+                return
+
+            # Remove the scheduled timeout job
+            current_jobs = context.job_queue.get_jobs_by_name(f"bet_timeout_{bet_id}")
+            for job in current_jobs:
+                job.schedule_removal()
+            
+            db.bets.delete_one({'_id': ObjectId(bet_id)})
+            try:
+                await query.edit_message_text(f"❌ شرط توسط @{bet['proposer_username']} لغو شد.")
+            except Exception as e:
+                logging.warning(f"Could not edit cancelled bet message {bet_id}: {e}")
             return
 
         # Join action (with AUTOMATIC RANDOM winner selection)
@@ -1154,14 +1173,19 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if user.id == bet['proposer_id']:
                 await query.answer("شما نمی‌توانید به شرط خودتان بپیوندید.", show_alert=True)
                 return
-            if bet['status'] != 'pending':
-                try:
-                    await query.edit_message_text("این شرط دیگر برای پیوستن در دسترس نیست.")
-                except: pass
+                
+            updated_bet = db.bets.find_one_and_update(
+                {'_id': ObjectId(bet_id), 'status': 'pending'},
+                {'$set': {'status': 'active'}}
+            )
+
+            if not updated_bet:
+                await query.answer("متاسفانه کس دیگری زودتر به این شرط پیوست.", show_alert=True)
                 return
                 
             joiner_doc = get_user(user.id)
             if joiner_doc['balance'] < bet['amount']:
+                db.bets.update_one({'_id': ObjectId(bet_id)}, {'$set': {'status': 'pending'}})
                 await query.answer("موجودی شما برای پیوستن به این شرط کافی نیست.", show_alert=True)
                 return
 
@@ -1201,7 +1225,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             
             # 4. Give prize to the winner and tax to the owner
             db.users.update_one({'user_id': winner_id}, {'$inc': {'balance': prize}})
-            # FIX: Send the collected tax to the bot owner
             if tax > 0 and bet['proposer_id'] != OWNER_ID and user.id != OWNER_ID:
                 db.users.update_one({'user_id': OWNER_ID}, {'$inc': {'balance': tax}})
                 logging.info(f"Transferred {tax} diamond tax from bet {bet_id} to owner {OWNER_ID}")
@@ -1241,7 +1264,6 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
 async def group_balance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles 'موجودی' command in groups, styled like the image."""
-    # FIX: Check if the update is a valid message to prevent errors.
     if not update.message:
         return
 
@@ -1252,7 +1274,7 @@ async def group_balance_handler(update: Update, context: ContextTypes.DEFAULT_TY
     
     text = (
         f"👤 کاربر: @{user.username or user.first_name}\n"
-        f"💎 موجودی الماس: {user_doc['balance']}\n"
+        f"💎 موجودی الماس: {user_doc['balance']:,}\n"
         f"💳 معادل تخمینی: {toman_value:,.0f} تومان"
     )
     await update.message.reply_text(text)
@@ -1260,7 +1282,6 @@ async def group_balance_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles diamond transfers in groups, styled like the image."""
-    # FIX: Check if the update is a valid message to prevent errors.
     if not update.message:
         return
         
@@ -1295,7 +1316,7 @@ async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"✅ انتقال موفق ✅\n\n"
             f"👤 از: @{sender.username or sender.first_name}\n"
             f"👥 به: @{receiver.username or receiver.first_name}\n"
-            f"💎 مبلغ: {amount} الماس"
+            f"💎 مبلغ: {amount:,} الماس"
         )
         await update.message.reply_text(text)
 
@@ -1308,7 +1329,6 @@ async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Starts a bet with inline buttons, styled like the image."""
-    # FIX: Check if the update is a valid message to prevent errors.
     if not update.message:
         return
 
@@ -1349,7 +1369,7 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     proposer_mention = f"@{proposer.username or proposer.first_name}"
     
     text = (
-        f"🎲 شرط‌بندی جدید به مبلغ {amount} الماس توسط {proposer_mention} شروع شد!\n\n"
+        f"🎲 شرط‌بندی جدید به مبلغ {amount:,} الماس توسط {proposer_mention} شروع شد!\n\n"
         f"شرکت کنندگان:\n"
         f"- {proposer_mention}"
     )
@@ -1397,24 +1417,23 @@ async def rip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"کاربر {target_user.mention_html()} موجودی کافی برای کسر {amount_to_deduct} الماس را ندارد.", parse_mode=ParseMode.HTML)
         return
 
-    # Deduct the balance
-    db.users.update_one(
+    # FIX: Atomically update the balance and get the updated document
+    updated_target_doc = db.users.find_one_and_update(
         {'user_id': target_user.id},
-        {'$inc': {'balance': -amount_to_deduct}}
+        {'$inc': {'balance': -amount_to_deduct}},
+        return_document=ReturnDocument.AFTER
     )
 
-    # Get the new balance
-    new_target_doc = get_user(target_user.id)
-    remaining_balance = new_target_doc['balance']
-
-    # Send confirmation message
-    response_text = (
-        f"- کاربر: {target_user.mention_html()} (ID: `{target_user.id}`)\n"
-        f"- مقدار کسر شده: **{amount_to_deduct}** الماس 💎\n"
-        f"- موجودی باقی‌مانده: **{remaining_balance}** الماس 💰"
-    )
-    
-    await update.message.reply_html(f"✅ عملیات کسر با موفقیت انجام شد:\n\n{response_text}")
+    if updated_target_doc:
+        remaining_balance = updated_target_doc['balance']
+        response_text = (
+            f"- کاربر: {target_user.mention_html()} (ID: `{target_user.id}`)\n"
+            f"- مقدار کسر شده: **{amount_to_deduct:,}** الماس 💎\n"
+            f"- موجودی باقی‌مانده: **{remaining_balance:,}** الماس 💰"
+        )
+        await update.message.reply_html(f"✅ عملیات کسر با موفقیت انجام شد:\n\n{response_text}")
+    else:
+        await update.message.reply_text("❌ خطایی در هنگام کسر موجودی رخ داد. کاربر یافت نشد.")
 
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
