@@ -867,13 +867,34 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
 # =======================================================
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    web_app.run(host='0.0.0.0', port=port)
+    # Use a production server like Gunicorn instead of Flask's development server
+    from waitress import serve
+    serve(web_app, host='0.0.0.0', port=port)
 
-async def main():
-    global bot_app, BOT_EVENT_LOOP
-    bot_app = Application.builder().token(BOT_TOKEN).build()
+async def post_init(application: Application):
+    """Actions to run after the bot is initialized."""
+    global BOT_EVENT_LOOP
     BOT_EVENT_LOOP = asyncio.get_running_loop()
+    
+    # Start Flask in a separate thread
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    
+    # Load and start existing self-bots from the database
+    for doc in db.self_bots.find({'is_active': True}):
+        logging.info(f"Auto-starting session for user {doc['user_id']} from database...")
+        await start_self_bot_instance(doc['user_id'], doc['session_string'])
 
+async def post_shutdown(application: Application):
+    """Actions to run before the bot shuts down."""
+    logging.info("Bot is shutting down. Stopping all self-bot instances...")
+    user_ids = list(ACTIVE_SELF_BOTS.keys())
+    for user_id in user_ids:
+        await stop_self_bot_instance(user_id)
+    logging.info("All self bots stopped. Exiting.")
+
+
+if __name__ == "__main__":
     # --- Conversation Handlers ---
     admin_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^👑 پنل ادمین$"), admin_panel_entry)],
@@ -909,41 +930,30 @@ async def main():
         states={
             AWAIT_ADMIN_SUPPORT_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_support_reply)]
         },
-        fallbacks=[CommandHandler('cancel', cancel_conversation)]
+        fallbacks=[CommandHandler('cancel', cancel_conversation)],
+        per_message=False
+    )
+
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .post_shutdown(post_shutdown)
+        .build()
     )
 
     # --- Add handlers ---
-    bot_app.add_handler(CommandHandler("start", start_command))
-    bot_app.add_handler(MessageHandler(filters.Regex("^💎 موجودی$"), show_balance))
-    bot_app.add_handler(MessageHandler(filters.Regex("^🎁 کسب جم رایگان$"), get_referral_link))
-    bot_app.add_handler(admin_conv)
-    bot_app.add_handler(deposit_conv)
-    bot_app.add_handler(support_conv)
-    bot_app.add_handler(self_bot_conv)
-    bot_app.add_handler(admin_reply_conv)
-    bot_app.add_handler(CallbackQueryHandler(callback_query_handler))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, general_message_handler))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(MessageHandler(filters.Regex("^💎 موجودی$"), show_balance))
+    application.add_handler(MessageHandler(filters.Regex("^🎁 کسب جم رایگان$"), get_referral_link))
+    application.add_handler(admin_conv)
+    application.add_handler(deposit_conv)
+    application.add_handler(support_conv)
+    application.add_handler(self_bot_conv)
+    application.add_handler(admin_reply_conv)
+    application.add_handler(CallbackQueryHandler(callback_query_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, general_message_handler))
 
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    
-    for doc in db.self_bots.find({'is_active': True}):
-        logging.info(f"Auto-starting session for user {doc['user_id']} from database...")
-        await start_self_bot_instance(doc['user_id'], doc['session_string'])
-
-    logging.info("Starting Telegram Bot Polling...")
-    await bot_app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logging.info("Bot stopped by user.")
-    finally:
-        # Clean up on exit
-        user_ids = list(ACTIVE_SELF_BOTS.keys())
-        for user_id in user_ids:
-            asyncio.run(stop_self_bot_instance(user_id))
-        logging.info("All self bots stopped. Exiting.")
+    logging.info("Starting Telegram Bot...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
