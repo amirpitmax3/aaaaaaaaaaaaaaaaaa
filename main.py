@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from datetime import datetime
 from bson import ObjectId
 import time
-
+import random # <--- اضافه شد
 # --- Pyrogram Imports for Self Bot Instances ---
 from pyrogram import Client, filters as pyro_filters
 from pyrogram.handlers import MessageHandler as PyroMessageHandler
@@ -124,8 +124,8 @@ HELP_TEXT = r"""
  • `موجودی`: نمایش موجودی الماس.
  • `انتقال [مبلغ]` (با ریپلای): انتقال الماس.
  • `شرط [مبلغ]` (با ریپلای): شروع شرط‌بندی.
- • `قبول` (ریپلای روی پیام شرط): قبول شرط.
- • `برنده` (ریپلای روی پیام شرط): اعلام برنده.
+ • `قبول` (ریپلای روی پیام شرط): قبول شرط. (نیاز به بازنگری)
+ • `برنده` (ریپلای روی پیام شرط): اعلام برنده. (نیاز به بازنگری)
 
 ---
 ** امنیت و منشی **
@@ -1063,13 +1063,15 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if user.id == bet['proposer_id']:
                 db.bets.delete_one({'_id': ObjectId(bet_id)})
                 try:
+                    # برگرداندن موجودی کسر شده در زمان شروع (اگر قبلا کسر شده باشد)
+                    # در حال حاضر موجودی در زمان JOIN کسر می‌شود، پس نیاز به بازگردانی نیست.
                     await query.edit_message_text(f"❌ شرط توسط @{bet['proposer_username']} لغو شد.")
                 except: pass
             else:
                 await query.answer("شما شروع کننده این شرط نیستید.", show_alert=True)
             return
 
-        # Join action
+        # Join action (now with RANDOM winner selection)
         if data[1] == "join":
             if user.id == bet['proposer_id']:
                 await query.answer("شما نمی‌توانید به شرط خودتان بپیوندید.", show_alert=True)
@@ -1085,41 +1087,61 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await query.answer("موجودی شما برای پیوستن به این شرط کافی نیست.", show_alert=True)
                 return
 
-            # Deduct from both and update bet
-            db.users.update_one({'user_id': bet['proposer_id']}, {'$inc': {'balance': -bet['amount']}})
-            db.users.update_one({'user_id': user.id}, {'$inc': {'balance': -bet['amount']}})
+            # 1. Deduct from both
+            amount = bet['amount']
+            db.users.update_one({'user_id': bet['proposer_id']}, {'$inc': {'balance': -amount}})
+            db.users.update_one({'user_id': user.id}, {'$inc': {'balance': -amount}})
             
             opponent_username = user.username or user.first_name
-            db.bets.update_one(
-                {'_id': ObjectId(bet_id)},
-                {'$set': {
-                    'status': 'active',
-                    'opponent_id': user.id,
-                    'opponent_username': opponent_username
-                }}
-            )
 
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(f"🏆 {bet['proposer_username']} برنده شد", callback_data=f"bet_winner_{bet_id}_{bet['proposer_id']}"),
-                    InlineKeyboardButton(f"🏆 {opponent_username} برنده شد", callback_data=f"bet_winner_{bet_id}_{user.id}")
-                ]
-            ])
+            # 2. Randomly select winner
+            proposer_id = bet['proposer_id']
+            opponent_id = user.id
             
+            winner_id = random.choice([proposer_id, opponent_id])
+            
+            # 3. Calculate prize and tax
+            total_pot = amount * 2
+            tax = round(total_pot * BET_TAX_RATE) 
+            prize = total_pot - tax
+            
+            # 4. Give prize to winner
+            db.users.update_one({'user_id': winner_id}, {'$inc': {'balance': prize}})
+
+            # 5. Determine usernames for display
+            if winner_id == proposer_id:
+                winner_username = bet['proposer_username']
+                loser_username = opponent_username
+            else:
+                winner_username = opponent_username
+                loser_username = bet['proposer_username']
+                
+            # 6. Delete the bet
+            db.bets.delete_one({'_id': ObjectId(bet_id)})
+
+            # 7. Construct final result message
             proposer_mention = f"@{bet['proposer_username']}" if bet['proposer_username'] else f"کاربر {bet['proposer_id']}"
             opponent_mention = f"@{opponent_username}" if opponent_username else user.mention_html()
+            
+            result_text = (
+                f"✅ **شرط‌بندی با موفقیت انجام شد!**\n\n"
+                f"👤 **شرکت‌کنندگان:** {proposer_mention} در مقابل {opponent_mention}\n"
+                f"💰 **مبلغ شرط:** {amount} الماس\n"
+                f"🎲 **نتیجه (شانسی):**\n\n"
+                f"🏆 **برنده:** @{winner_username}\n"
+                f"💔 **بازنده:** @{loser_username}\n\n"
+                f"💰 **جایزه خالص:** {prize} الماس"
+            )
 
             try:
                 await query.edit_message_text(
-                    f"✅ شرط بین {proposer_mention} و {opponent_mention} فعال شد!\n\n"
-                    f"یکی از طرفین می‌تواند برنده را مشخص کند.",
-                    reply_markup=keyboard,
-                    parse_mode=ParseMode.HTML
+                    result_text,
+                    parse_mode=ParseMode.MARKDOWN
                 )
             except Exception as e:
-                 logging.error(f"Failed to EDIT bet message on JOIN {bet_id}: {e}")
-
-        # Winner action
+                logging.error(f"Failed to EDIT bet message on RANDOM WINNER {bet_id}: {e}")
+                
+        # Winner action (kept for compatibility with old, active bets, but no longer generated by new code)
         if data[1] == "winner":
             winner_id = int(data[3])
             # Find the bet again to ensure it's still active
@@ -1247,6 +1269,7 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("موجودی شما برای این شرط کافی نیست.")
         return
 
+    # توجه: موجودی در زمان پیوستن (Join) کسر می‌شود.
     bet = db.bets.insert_one({
         'proposer_id': proposer.id,
         'proposer_username': proposer.username or proposer.first_name,
@@ -1268,7 +1291,7 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = (
         f"🎲 شرط‌بندی جدید به مبلغ {amount} الماس توسط {proposer_mention} شروع شد!\n\n"
-        f"نفر دوم که به شرط بپیوندد، برنده مشخص خواهد شد.\n\n"
+        f"نفر دوم که به شرط بپیوندد، **نتیجه به صورت شانسی مشخص خواهد شد**.\n\n"
         f"شرکت کنندگان:\n"
         f"- {proposer_mention}"
     )
@@ -1318,10 +1341,12 @@ if __name__ == "__main__":
     admin_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^👑 پنل ادمین$"), admin_panel_entry)],
         states={
-            ADMIN_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_choice)],
+            ADMIN_MENU: [MessageHandler(filters.Regex("^💎 تنظیم قیمت الماس$|^💰 تنظیم موجودی اولیه$|^🚀 تنظیم هزینه سلف$|^🎁 تنظیم پاداش دعوت$|^💳 تنظیم شماره کارت$|^📢 تنظیم کانال اجباری$|^➕ افزودن ادمین$|^➖ حذف ادمین$"), process_admin_choice),
+                         MessageHandler(filters.Regex("^✅/❌ قفل کانال$|^🧾 تایید تراکنش‌ها$"), process_admin_choice),
+                         MessageHandler(filters.Regex("^⬅️ بازگشت به منوی اصلی$"), process_admin_choice)],
             AWAIT_ADMIN_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_reply)]
         },
-        fallbacks=[CommandHandler('cancel', cancel_conversation), MessageHandler(filters.Regex("^⬅️ بازگشت به منوی اصلی$"), cancel_conversation)],
+        fallbacks=[CommandHandler('cancel', cancel_conversation)],
         conversation_timeout=300
     )
     deposit_conv = ConversationHandler(
@@ -1383,4 +1408,3 @@ if __name__ == "__main__":
 
     logging.info("Starting Telegram Bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
