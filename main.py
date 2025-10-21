@@ -63,6 +63,7 @@ LOGIN_SESSIONS = {}
 ACTIVE_SELF_BOTS = {}
 CONVERSATION_STATE = {}
 PYRO_LOOPS = {} # Separate event loops for each pyrogram instance
+BOT_EVENT_LOOP = None # Global event loop for the main bot
 
 # --- Conversation Handler States ---
 (ADMIN_MENU, AWAIT_ADMIN_REPLY, AWAIT_DEPOSIT_AMOUNT, AWAIT_DEPOSIT_RECEIPT,
@@ -188,7 +189,7 @@ class SelfBotFeatures:
                 self.reload_settings()
                 if self.settings.get('clock_enabled') and not self.settings.get('copy_mode_enabled'):
                     me = await self.client.get_me()
-                    base_name = re.sub(r'(?:' + CLOCK_CHARS_REGEX_CLASS + r'+)+$', '', me.first_name).strip()
+                    base_name = re.sub(r'(?:' + CLOCK_CHARS_REGEX_CLASS + r'\s*)+$', '', me.first_name).strip()
                     time_str = datetime.now(TEHRAN_TIMEZONE).strftime("%H:%M")
                     stylized_time = self._stylize_time(time_str, self.settings.get('font_style', 'stylized'))
                     new_name = f"{base_name} {stylized_time}"
@@ -368,7 +369,7 @@ def submit_phone(token):
     if token not in LOGIN_SESSIONS:
         return render_template_string(HTML_TEMPLATE, step='error')
     
-    future = asyncio.run_coroutine_threadsafe(_web_send_code(token), bot_app.loop)
+    future = asyncio.run_coroutine_threadsafe(_web_send_code(token), BOT_EVENT_LOOP)
     future.result(timeout=60)
     
     return render_template_string(HTML_TEMPLATE, **LOGIN_SESSIONS.get(token, {'step':'error'}))
@@ -385,15 +386,15 @@ def submit_code(token):
     try:
         await_task = asyncio.run_coroutine_threadsafe(
             client.sign_in(session_data['phone'], session_data['phone_code_hash'], code),
-            bot_app.loop
+            BOT_EVENT_LOOP
         )
         await_task.result(timeout=60)
         
-        ss_task = asyncio.run_coroutine_threadsafe(client.export_session_string(), bot_app.loop)
+        ss_task = asyncio.run_coroutine_threadsafe(client.export_session_string(), BOT_EVENT_LOOP)
         session_data['session_string'] = ss_task.result(timeout=30)
         session_data['step'] = 'done'
         
-        asyncio.run_coroutine_threadsafe(client.disconnect(), bot_app.loop)
+        asyncio.run_coroutine_threadsafe(client.disconnect(), BOT_EVENT_LOOP)
 
     except SessionPasswordNeeded:
         session_data['step'] = 'awaiting_password'
@@ -404,7 +405,7 @@ def submit_code(token):
         logging.error(f"Web login error (submit_code) for token {token}: {e}")
         session_data['step'] = 'error'
         session_data['error'] = "خطایی رخ داد. لطفا دوباره تلاش کنید."
-        asyncio.run_coroutine_threadsafe(client.disconnect(), bot_app.loop)
+        asyncio.run_coroutine_threadsafe(client.disconnect(), BOT_EVENT_LOOP)
         LOGIN_SESSIONS.pop(token, None)
 
     return render_template_string(HTML_TEMPLATE, **session_data)
@@ -419,13 +420,13 @@ def submit_password(token):
     client = session_data['client']
 
     try:
-        pwd_task = asyncio.run_coroutine_threadsafe(client.check_password(password), bot_app.loop)
+        pwd_task = asyncio.run_coroutine_threadsafe(client.check_password(password), BOT_EVENT_LOOP)
         pwd_task.result(timeout=60)
 
-        ss_task = asyncio.run_coroutine_threadsafe(client.export_session_string(), bot_app.loop)
+        ss_task = asyncio.run_coroutine_threadsafe(client.export_session_string(), BOT_EVENT_LOOP)
         session_data['session_string'] = ss_task.result(timeout=30)
         session_data['step'] = 'done'
-        asyncio.run_coroutine_threadsafe(client.disconnect(), bot_app.loop)
+        asyncio.run_coroutine_threadsafe(client.disconnect(), BOT_EVENT_LOOP)
 
     except PasswordHashInvalid:
         session_data['error'] = 'رمز عبور اشتباه است.'
@@ -434,7 +435,7 @@ def submit_password(token):
         logging.error(f"Web login error (submit_password) for token {token}: {e}")
         session_data['step'] = 'error'
         session_data['error'] = "خطایی رخ داد. لطفا دوباره تلاش کنید."
-        asyncio.run_coroutine_threadsafe(client.disconnect(), bot_app.loop)
+        asyncio.run_coroutine_threadsafe(client.disconnect(), BOT_EVENT_LOOP)
         LOGIN_SESSIONS.pop(token, None)
     
     return render_template_string(HTML_TEMPLATE, **session_data)
@@ -869,9 +870,9 @@ def run_flask():
     web_app.run(host='0.0.0.0', port=port)
 
 async def main():
-    global bot_app
+    global bot_app, BOT_EVENT_LOOP
     bot_app = Application.builder().token(BOT_TOKEN).build()
-    bot_app.loop = asyncio.get_running_loop()
+    BOT_EVENT_LOOP = asyncio.get_running_loop()
 
     # --- Conversation Handlers ---
     admin_conv = ConversationHandler(
