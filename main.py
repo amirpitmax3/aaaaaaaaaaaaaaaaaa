@@ -653,7 +653,7 @@ async def process_phone_number(update: Update, context: ContextTypes.DEFAULT_TYP
     }
 
     login_url = f"{WEB_APP_URL}/login/{login_token}"
-    user_doc = get_user(user.id)
+    user_doc = get_user(user_id)
     await update.message.reply_text(
         f"✅ شماره شما دریافت شد.\n\n"
         f"لطفا روی لینک زیر کلیک کرده و مراحل را در مرورگر دنبال کنید تا کد Session خود را دریافت کنید:\n\n"
@@ -667,7 +667,7 @@ async def process_phone_number(update: Update, context: ContextTypes.DEFAULT_TYP
 async def process_session_string(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     session_string = update.message.text
-    user_doc = get_user(user.id)
+    user_doc = get_user(user_id)
 
     if len(session_string) < 50 or not re.match(r"^[A-Za-z0-9\-_.]+$", session_string):
         await update.message.reply_text("❌ کد Session نامعتبر به نظر می‌رسد. لطفا دوباره تلاش کنید.")
@@ -1146,12 +1146,13 @@ if __name__ == "__main__":
         fallbacks=[CommandHandler('cancel', cancel_conversation)]
     )
     self_bot_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^🚀 dark self$"), self_bot_entry)],
+        entry_points=[MessageHandler(filters.Regex("^🚀 dark self$") & filters.ChatType.PRIVATE, self_bot_entry)],
         states={
-            AWAIT_PHONE: [MessageHandler(filters.CONTACT, process_phone_number)],
-            AWAIT_SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_session_string)],
+            AWAIT_PHONE: [MessageHandler(filters.CONTACT & filters.ChatType.PRIVATE, process_phone_number)],
+            AWAIT_SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, process_session_string)],
         },
-        fallbacks=[CommandHandler('cancel', cancel_conversation)]
+        fallbacks=[CommandHandler('cancel', cancel_conversation)],
+        conversation_timeout=300  # 5 minute timeout
     )
     admin_reply_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_support_reply_entry, pattern="^reply_support_")],
