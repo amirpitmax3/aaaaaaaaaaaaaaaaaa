@@ -670,6 +670,7 @@ admin_keyboard = ReplyKeyboardMarkup([
     [KeyboardButton("💳 تنظیم شماره کارت"), KeyboardButton("📢 تنظیم کانال اجباری")],
     [KeyboardButton("✅/❌ قفل کانال"), KeyboardButton("🧾 تایید تراکنش‌ها")],
     [KeyboardButton("➕ افزودن ادمین"), KeyboardButton("➖ حذف ادمین")],
+    [KeyboardButton("➖ کسر موجودی کاربر")],
     [KeyboardButton("⬅️ بازگشت به منوی اصلی")]
 ], resize_keyboard=True)
 # =======================================================
@@ -889,7 +890,6 @@ async def admin_panel_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_admin_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     choice = update.message.text
-    # FIX: Using context.user_data for conversation state
     context.user_data['admin_choice'] = choice
     
     prompts = {
@@ -901,6 +901,7 @@ async def process_admin_choice(update: Update, context: ContextTypes.DEFAULT_TYP
         "📢 تنظیم کانال اجباری": "آیدی عددی کانال اجباری را وارد کنید:",
         "➕ افزودن ادمین": "آیدی عددی کاربر برای افزودن به ادمین‌ها را وارد کنید:",
         "➖ حذف ادمین": "آیدی عددی ادمین برای حذف را وارد کنید:",
+        "➖ کسر موجودی کاربر": "آیدی عددی کاربر و مبلغ کسر را با یک فاصله وارد کنید (مثال: 12345 100):",
     }
     
     if choice in prompts:
@@ -925,7 +926,6 @@ async def process_admin_choice(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def process_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    # FIX: Reading from context.user_data
     last_choice = context.user_data.get('admin_choice')
     reply = update.message.text
     admin_doc = get_user(user_id)
@@ -955,16 +955,37 @@ async def process_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await update.message.reply_text("⛔️ فقط مالک اصلی ربات می‌تواند ادمین حذف کند.", reply_markup=admin_keyboard)
              else:
                 db.users.update_one({'user_id': int(reply)}, {'$set': {'is_admin': False}})
+        elif last_choice == "➖ کسر موجودی کاربر":
+            parts = reply.split()
+            if len(parts) != 2: raise ValueError("فرمت ورودی اشتباه است.")
+            target_user_id = int(parts[0])
+            amount_to_deduct = int(parts[1])
+            if amount_to_deduct <= 0: raise ValueError("مبلغ باید مثبت باشد.")
+            
+            result = db.users.update_one(
+                {'user_id': target_user_id},
+                {'$inc': {'balance': -amount_to_deduct}}
+            )
+            if result.matched_count == 0:
+                await update.message.reply_text(f"❌ کاربری با آیدی {target_user_id} یافت نشد.", reply_markup=admin_keyboard)
+            else:
+                await update.message.reply_text(f"✅ مبلغ {amount_to_deduct} الماس با موفقیت از کاربر {target_user_id} کسر شد.", reply_markup=admin_keyboard)
+                try:
+                    await context.bot.send_message(
+                        chat_id=target_user_id,
+                        text=f"⚠️ مدیر سیستم مبلغ {amount_to_deduct} الماس از حساب شما کسر کرد."
+                    )
+                except Exception as e:
+                    logging.info(f"Could not notify user {target_user_id} about balance deduction: {e}")
 
         await update.message.reply_text("✅ تنظیمات با موفقیت ذخیره شد.", reply_markup=admin_keyboard)
     except (ValueError, IndexError, TypeError) as e:
         logging.error(f"Admin reply error for choice '{last_choice}': {e}")
-        await update.message.reply_text(f"❌ ورودی نامعتبر است. لطفا دوباره تلاش کنید.", reply_markup=admin_keyboard)
+        await update.message.reply_text(f"❌ ورودی نامعتبر است. {e}", reply_markup=admin_keyboard)
     except Exception as e:
         logging.error(f"Unexpected admin reply error: {e}")
         await update.message.reply_text(f"❌ خطایی ناشناخته رخ داد.", reply_markup=admin_keyboard)
 
-    # FIX: Clearing from context.user_data
     context.user_data.pop('admin_choice', None)
     return ADMIN_MENU
 
@@ -997,6 +1018,31 @@ async def process_admin_support_reply(update: Update, context: ContextTypes.DEFA
 # =======================================================
 #  بخش ۷: مدیریت Callback Query و پیام‌های عمومی
 # =======================================================
+async def cancel_bet_job(context: ContextTypes.DEFAULT_TYPE):
+    """Job to cancel a bet if it's not joined within the time limit."""
+    job = context.job
+    bet_id = job.data['bet_id']
+    chat_id = job.data['chat_id']
+    message_id = job.data['message_id']
+
+    # Find and delete the bet only if it's still pending
+    deleted_bet = db.bets.find_one_and_delete({
+        '_id': ObjectId(bet_id),
+        'status': 'pending'
+    })
+
+    if deleted_bet:
+        logging.info(f"Bet {bet_id} expired and was cancelled.")
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=f"⏰ شرط‌بندی روی مبلغ {deleted_bet['amount']} الماس منقضی شد.",
+                reply_markup=None # Remove buttons
+            )
+        except Exception as e:
+            logging.warning(f"Could not edit expired bet message {message_id}: {e}")
+
 async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1061,9 +1107,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         # Cancel action
         if data[1] == "cancel":
             if user.id == bet['proposer_id']:
+                # Remove the scheduled timeout job
+                current_jobs = context.job_queue.get_jobs_by_name(f"bet_timeout_{bet_id}")
+                for job in current_jobs:
+                    job.schedule_removal()
+                
                 db.bets.delete_one({'_id': ObjectId(bet_id)})
                 try:
-                    # The balance is deducted on join, so no refund is needed here.
                     await query.edit_message_text(f"❌ شرط توسط @{bet['proposer_username']} لغو شد.")
                 except: pass
             else:
@@ -1085,6 +1135,16 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             if joiner_doc['balance'] < bet['amount']:
                 await query.answer("موجودی شما برای پیوستن به این شرط کافی نیست.", show_alert=True)
                 return
+
+            # --- Winner Selection Animation ---
+            try:
+                await query.edit_message_text(
+                    "🎲 در حال انتخاب برنده...",
+                    reply_markup=None # Remove buttons while processing
+                )
+                await asyncio.sleep(3)
+            except Exception as e:
+                logging.warning(f"Could not show bet animation for {bet_id}: {e}")
 
             # 1. Deduct from both participants
             amount = bet['amount']
@@ -1239,7 +1299,19 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"- {proposer_mention}"
     )
             
-    await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    sent_message = await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+    
+    # Schedule a job to cancel the bet if not joined in 60 seconds
+    context.job_queue.run_once(
+        cancel_bet_job,
+        60, # 60 seconds
+        data={
+            'bet_id': bet_id,
+            'chat_id': update.effective_chat.id,
+            'message_id': sent_message.message_id
+        },
+        name=f"bet_timeout_{bet_id}"
+    )
 
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1284,7 +1356,7 @@ if __name__ == "__main__":
     admin_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^👑 پنل ادمین$"), admin_panel_entry)],
         states={
-            ADMIN_MENU: [MessageHandler(filters.Regex("^💎 تنظیم قیمت الماس$|^💰 تنظیم موجودی اولیه$|^🚀 تنظیم هزینه سلف$|^🎁 تنظیم پاداش دعوت$|^💳 تنظیم شماره کارت$|^📢 تنظیم کانال اجباری$|^➕ افزودن ادمین$|^➖ حذف ادمین$"), process_admin_choice),
+            ADMIN_MENU: [MessageHandler(filters.Regex("^💎 تنظیم قیمت الماس$|^💰 تنظیم موجودی اولیه$|^🚀 تنظیم هزینه سلف$|^🎁 تنظیم پاداش دعوت$|^💳 تنظیم شماره کارت$|^📢 تنظیم کانال اجباری$|^➕ افزودن ادمین$|^➖ حذف ادمین$|^➖ کسر موجودی کاربر$"), process_admin_choice),
                          MessageHandler(filters.Regex("^✅/❌ قفل کانال$|^🧾 تایید تراکنش‌ها$"), process_admin_choice),
                          MessageHandler(filters.Regex("^⬅️ بازگشت به منوی اصلی$"), process_admin_choice)],
             AWAIT_ADMIN_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_reply)]
@@ -1351,3 +1423,4 @@ if __name__ == "__main__":
 
     logging.info("Starting Telegram Bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
