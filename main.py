@@ -1058,7 +1058,7 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'proposer_id': proposer.id,
         'proposer_username': proposer.username or proposer.first_name,
         'amount': amount,
-        'chat_id': update.chat.id,
+        'chat_id': update.effective_chat.id,
         'status': 'pending',
         'created_at': datetime.utcnow()
     })
@@ -1193,3 +1193,5 @@ if __name__ == "__main__":
     logging.info("Starting Telegram Bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
+" and have a query about this.
+(actual user query follows)
