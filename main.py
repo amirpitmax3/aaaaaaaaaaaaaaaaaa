@@ -16,10 +16,13 @@ from telegram.constants import ParseMode
 from telegram.ext import (Application, CommandHandler, MessageHandler,
                           ConversationHandler, filters, ContextTypes, CallbackQueryHandler)
 from zoneinfo import ZoneInfo
-from datetime import datetime, timezone # <--- Updated import
+from datetime import datetime, timezone
 from bson import ObjectId
 import time
 import random
+import html
+import traceback
+
 # --- Pyrogram Imports for Self Bot Instances ---
 from pyrogram import Client, filters as pyro_filters
 from pyrogram.handlers import MessageHandler as PyroMessageHandler
@@ -785,7 +788,7 @@ async def process_deposit_receipt(update: Update, context: ContextTypes.DEFAULT_
         'amount': amount,
         'receipt_file_id': update.message.photo[-1].file_id,
         'status': 'pending',
-        'timestamp': datetime.now(timezone.utc) # <--- FIX: Used timezone-aware datetime
+        'timestamp': datetime.now(timezone.utc)
     })
     
     caption = (f"🧾 درخواست افزایش موجودی جدید\n"
@@ -1136,6 +1139,12 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 await query.answer("موجودی شما برای پیوستن به این شرط کافی نیست.", show_alert=True)
                 return
 
+            # FIX: Remove the timeout job as soon as the bet is joined
+            current_jobs = context.job_queue.get_jobs_by_name(f"bet_timeout_{bet_id}")
+            for job in current_jobs:
+                job.schedule_removal()
+                logging.info(f"Removed bet timeout job for successfully joined bet {bet_id}")
+
             # --- Winner Selection Animation ---
             try:
                 await query.edit_message_text(
@@ -1164,9 +1173,13 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
             tax = round(total_pot * BET_TAX_RATE) 
             prize = total_pot - tax
             
-            # 4. Give prize to the winner
+            # 4. Give prize to the winner and tax to the owner
             db.users.update_one({'user_id': winner_id}, {'$inc': {'balance': prize}})
-
+            # FIX: Send the collected tax to the bot owner
+            if tax > 0 and bet['proposer_id'] != OWNER_ID and user.id != OWNER_ID:
+                db.users.update_one({'user_id': OWNER_ID}, {'$inc': {'balance': tax}})
+                logging.info(f"Transferred {tax} diamond tax from bet {bet_id} to owner {OWNER_ID}")
+            
             # 5. Determine usernames for display
             if winner_id == proposer_id:
                 winner_username = bet['proposer_username']
@@ -1296,7 +1309,7 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'amount': amount,
         'chat_id': update.effective_chat.id,
         'status': 'pending',
-        'created_at': datetime.now(timezone.utc) # <--- FIX: Used timezone-aware datetime
+        'created_at': datetime.now(timezone.utc)
     })
     bet_id = str(bet.inserted_id)
 
@@ -1366,6 +1379,39 @@ async def post_shutdown(application: Application):
         await stop_self_bot_instance(user_id)
     logging.info("All self bots stopped. Exiting.")
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Log the error and handle specific cases like the Conflict error."""
+    logging.error("Exception while handling an update:", exc_info=context.error)
+
+    # Specific handling for the "Conflict" error to avoid spamming logs.
+    if "Conflict: terminated by other getUpdates request" in str(context.error):
+        logging.warning(
+            "Conflict error detected. This usually means another instance of the bot is running. "
+            "Please check your deployment environment to ensure only one instance is active."
+        )
+        return
+
+    # Prepare traceback for reporting to the owner
+    tb_list = traceback.format_exception(None, context.error, context.error.__traceback__)
+    tb_string = "".join(tb_list)
+    update_str = update.to_json(indent=2) if isinstance(update, Update) else str(update)
+    
+    message = (
+        f"An exception was raised while handling an update\n"
+        f"<pre>update = {html.escape(update_str)}</pre>\n\n"
+        f"<pre>context.chat_data = {html.escape(str(context.chat_data))}</pre>\n\n"
+        f"<pre>context.user_data = {html.escape(str(context.user_data))}</pre>\n\n"
+        f"<pre>{html.escape(tb_string)}</pre>"
+    )
+    
+    # Truncate message if too long
+    if len(message) > 4096:
+        message = message[:4090] + "...</pre>"
+
+    try:
+        await context.bot.send_message(chat_id=OWNER_ID, text=message, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logging.error(f"Failed to send error notification to owner: {e}")
 
 if __name__ == "__main__":
     # --- Conversation Handlers ---
@@ -1423,6 +1469,9 @@ if __name__ == "__main__":
     )
 
     # --- Add handlers ---
+    # FIX: Add a global error handler to catch issues like the Conflict error
+    application.add_error_handler(error_handler)
+    
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(MessageHandler(filters.Regex("^💎 موجودی$"), show_balance))
     application.add_handler(MessageHandler(filters.Regex("^🎁 کسب جم رایگان$"), get_referral_link))
@@ -1439,3 +1488,4 @@ if __name__ == "__main__":
 
     logging.info("Starting Telegram Bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
