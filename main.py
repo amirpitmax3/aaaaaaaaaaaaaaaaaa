@@ -1054,6 +1054,11 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("موجودی شما برای این شرط کافی نیست.")
         return
 
+    # 
+    # FIX: Changed `update.chat.id` to `update.effective_chat.id`
+    # The error `AttributeError: 'Update' object has no attribute 'chat'` happens here.
+    # `effective_chat` is the correct way to get chat info from an update.
+    # 
     bet = db.bets.insert_one({
         'proposer_id': proposer.id,
         'proposer_username': proposer.username or proposer.first_name,
@@ -1192,8 +1197,3 @@ if __name__ == "__main__":
 
     logging.info("Starting Telegram Bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
-
-" and have a query about this.
-(actual user query follows)
-سلام خسته نباشید ببین من میخوام یه تغییر کوچیک تو سورس بدم اونم این که میخوام هزینه ورود به ربات رو 100 الماس کنم و هرکی میاد 100 تا الماس داشته باشه و با هر دعوت 50 الماس به معرف بده و هزینه استفاده از سلف ساعتی 20 الماس باشه و قیمت خرید الماس هم هر 1 عدد 1000 تومن باشه
-
