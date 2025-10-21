@@ -40,8 +40,8 @@ logging.getLogger("pyrogram").setLevel(logging.WARNING)
 
 
 # --- Environment Variables & Constants ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "7177894206:AAH3k_aU_u_qgBSVbS-B2CMeCmlMPz28d20")
-OWNER_ID = int(os.environ.get("OWNER_ID", 6599181169))
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8233582209:AAHKPQX-349tAfBOCFWbRRqcpD-QbVrDzQ0")
+OWNER_ID = int(os.environ.get("OWNER_ID", 7423552124))
 API_ID = int(os.environ.get("API_ID", 28190856))
 API_HASH = os.environ.get("API_HASH", "6b9b5309c2a211b526c6ddad6eabb521")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://CFNBEFBGWFB:hdhbedfefbegh@cluster0.obohcl3.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
