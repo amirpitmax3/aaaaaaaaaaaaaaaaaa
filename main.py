@@ -18,6 +18,7 @@ from telegram.ext import (Application, CommandHandler, MessageHandler,
 from zoneinfo import ZoneInfo
 from datetime import datetime
 from bson import ObjectId
+import time
 
 # --- Pyrogram Imports for Self Bot Instances ---
 from pyrogram import Client, filters as pyro_filters
@@ -67,7 +68,8 @@ BOT_EVENT_LOOP = None # Global event loop for the main bot
 
 # --- Conversation Handler States ---
 (ADMIN_MENU, AWAIT_ADMIN_REPLY, AWAIT_DEPOSIT_AMOUNT, AWAIT_DEPOSIT_RECEIPT,
- AWAIT_SUPPORT_MESSAGE, AWAIT_ADMIN_SUPPORT_REPLY, AWAIT_PHONE, AWAIT_SESSION) = range(8)
+ AWAIT_SUPPORT_MESSAGE, AWAIT_ADMIN_SUPPORT_REPLY, AWAIT_PHONE, AWAIT_SESSION,
+ AWAIT_BET_ACCEPTANCE) = range(9)
 
 # =======================================================
 #  بخش ۲: منطق کامل سلف بات (Pyrogram)
@@ -356,6 +358,10 @@ async def _web_send_code(token):
         if 'client' in session_data: await session_data['client'].disconnect()
         LOGIN_SESSIONS.pop(token, None)
 
+@web_app.route('/')
+def health_check():
+    """Health check endpoint for Render."""
+    return "Bot is running.", 200
 
 @web_app.route('/login/<token>')
 def login_page(token):
@@ -849,11 +855,149 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
         keyboard = features_instance.get_management_keyboard(user_id)
         await query.edit_message_reply_markup(keyboard)
 
-async def general_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text and text.strip() == "موجودی":
-        user_doc = get_user(update.effective_user.id)
-        await update.message.reply_text(f"💎 موجودی شما: **{user_doc['balance']}** الماس", parse_mode=ParseMode.MARKDOWN)
+async def group_balance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles 'موجودی' command in groups."""
+    user_doc = get_user(update.effective_user.id)
+    await update.message.reply_text(f"💎 موجودی شما: **{user_doc['balance']}** الماس", parse_mode=ParseMode.MARKDOWN)
+
+async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles diamond transfers in groups."""
+    sender = update.effective_user
+    if not update.message.reply_to_message:
+        return
+    receiver = update.message.reply_to_message.from_user
+    
+    match = re.search(r'(\d+)', update.message.text)
+    if not match:
+        return
+
+    try:
+        amount = int(match.group(1))
+        if amount <= 0:
+            return
+
+        sender_doc = get_user(sender.id)
+        
+        if sender.id == receiver.id:
+            await update.message.reply_text("انتقال به خود امکان‌پذیر نیست.")
+            return
+        
+        if sender_doc['balance'] < amount:
+            await update.message.reply_text("موجودی شما کافی نیست.")
+            return
+
+        # Ensure receiver exists in DB
+        get_user(receiver.id)
+
+        # Perform transaction
+        db.users.update_one({'user_id': sender.id}, {'$inc': {'balance': -amount}})
+        db.users.update_one({'user_id': receiver.id}, {'$inc': {'balance': amount}})
+
+        text = (f"✅ **انتقال موفق** ✅\n\n"
+                f"👤 **از:** {sender.mention_html()}\n"
+                f"👥 **به:** {receiver.mention_html()}\n"
+                f"💎 **مبلغ:** {amount} الماس")
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    except (ValueError, TypeError):
+        await update.message.reply_text("مبلغ نامعتبر است.")
+    except Exception as e:
+        logging.error(f"Error during transfer: {e}")
+        await update.message.reply_text("خطایی در هنگام انتقال رخ داد.")
+
+
+async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Starts a bet."""
+    proposer = update.effective_user
+    if not update.message.reply_to_message:
+        return
+    opponent = update.message.reply_to_message.from_user
+
+    match = re.search(r'(\d+)', update.message.text)
+    if not match:
+        return
+    
+    try:
+        amount = int(match.group(1))
+        if amount <= 0: return
+
+        proposer_doc = get_user(proposer.id)
+        opponent_doc = get_user(opponent.id)
+
+        if proposer.id == opponent.id:
+            await update.message.reply_text("شما نمی‌توانید با خودتان شرط ببندید.")
+            return ConversationHandler.END
+        
+        if proposer_doc['balance'] < amount:
+            await update.message.reply_text(f"{proposer.mention_html()}، موجودی شما برای این شرط کافی نیست.", parse_mode=ParseMode.HTML)
+            return ConversationHandler.END
+            
+        if opponent_doc['balance'] < amount:
+            await update.message.reply_text(f"{opponent.mention_html()}، موجودی شما برای این شرط کافی نیست.", parse_mode=ParseMode.HTML)
+            return ConversationHandler.END
+
+        bet_id = update.message.message_id
+        context.chat_data[bet_id] = {
+            'proposer': proposer.to_dict(),
+            'opponent': opponent.to_dict(),
+            'amount': amount,
+            'created_at': time.time()
+        }
+
+        text = (f"❗️ **شرط جدید** ❗️\n\n"
+                f"{proposer.mention_html()} یک شرط به مبلغ **{amount}** الماس با {opponent.mention_html()} ایجاد کرد.\n\n"
+                f"{opponent.mention_html()}، برای قبول شرط روی این پیام ریپلای کرده و کلمه `قبول` را ارسال کنید. (۲ دقیقه فرصت دارید)")
+
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+        return AWAIT_BET_ACCEPTANCE
+
+    except (ValueError, TypeError):
+        return ConversationHandler.END
+
+async def accept_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Accepts an active bet."""
+    accepter = update.effective_user
+    if not update.message.reply_to_message or not update.message.reply_to_message.from_user.is_bot:
+        return AWAIT_BET_ACCEPTANCE
+
+    original_bet_id = update.message.reply_to_message.reply_to_message.message_id
+    bet_data = context.chat_data.get(original_bet_id)
+
+    if not bet_data:
+        return AWAIT_BET_ACCEPTANCE
+        
+    if accepter.id != bet_data['opponent']['id']:
+        return AWAIT_BET_ACCEPTANCE
+
+    proposer = bet_data['proposer']
+    opponent = bet_data['opponent']
+    amount = bet_data['amount']
+
+    # Deduct balance from both
+    db.users.update_one({'user_id': proposer['id']}, {'$inc': {'balance': -amount}})
+    db.users.update_one({'user_id': opponent['id']}, {'$inc': {'balance': -amount}})
+
+    bet_data['status'] = 'active'
+    
+    text = (f"✅ **شرط فعال شد** ✅\n\n"
+            f"شرط بین {proposer['first_name']} و {opponent['first_name']} به مبلغ **{amount}** الماس فعال شد.\n\n"
+            f"برنده کل مبلغ ({amount * 2} الماس) را دریافت خواهد کرد.\n"
+            f"برای اعلام برنده، روی این پیام ریپلای کرده و `برنده` را ارسال کنید.")
+            
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    return ConversationHandler.END
+
+async def bet_timeout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles bet timeout."""
+    bet_id_to_remove = None
+    for bet_id, data in context.chat_data.items():
+        if isinstance(bet_id, int) and time.time() - data.get('created_at', 0) > 120 and 'status' not in data:
+            bet_id_to_remove = bet_id
+            break
+    if bet_id_to_remove:
+        context.chat_data.pop(bet_id_to_remove, None)
+        # Optionally send a message that the bet expired.
+        # This is harder to do without the original update object.
 
 async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_doc = get_user(update.effective_user.id)
@@ -933,6 +1077,14 @@ if __name__ == "__main__":
         fallbacks=[CommandHandler('cancel', cancel_conversation)],
         per_message=False
     )
+    bet_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex(r'^شرط \d+$') & filters.REPLY & filters.ChatType.GROUPS, start_bet_handler)],
+        states={
+            AWAIT_BET_ACCEPTANCE: [MessageHandler(filters.Regex(r'^قبول$') & filters.REPLY, accept_bet_handler)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_conversation)],
+        conversation_timeout=120 # 2 minutes to accept
+    )
 
     application = (
         Application.builder()
@@ -951,8 +1103,11 @@ if __name__ == "__main__":
     application.add_handler(support_conv)
     application.add_handler(self_bot_conv)
     application.add_handler(admin_reply_conv)
+    application.add_handler(bet_conv)
+    application.add_handler(MessageHandler(filters.Regex(r'^انتقال \d+$') & filters.REPLY & filters.ChatType.GROUPS, transfer_handler))
+    application.add_handler(MessageHandler(filters.Regex(r'^موجودی$') & filters.ChatType.GROUPS, group_balance_handler))
     application.add_handler(CallbackQueryHandler(callback_query_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS, general_message_handler))
+
 
     logging.info("Starting Telegram Bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
