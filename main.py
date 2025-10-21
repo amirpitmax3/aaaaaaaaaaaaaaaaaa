@@ -978,7 +978,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 logging.error(f"Failed to EDIT bet message on WINNER {bet_id}: {e}")
 
 async def group_balance_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles 'موجودی' command in groups."""
+    """Handles 'موجودی' command in groups, styled like the image."""
     user = update.effective_user
     user_doc = get_user(user.id)
     price = get_setting('diamond_price') or 1000
@@ -993,20 +993,18 @@ async def group_balance_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles diamond transfers in groups."""
+    """Handles diamond transfers in groups, styled like the image."""
     sender = update.effective_user
-    if not update.message.reply_to_message:
+    if not update.message.reply_to_message or not update.message.reply_to_message.from_user:
         return
     receiver = update.message.reply_to_message.from_user
     
     match = re.search(r'(\d+)', update.message.text)
-    if not match:
-        return
+    if not match: return
 
     try:
         amount = int(match.group(1))
-        if amount <= 0:
-            return
+        if amount <= 0: return
 
         sender_doc = get_user(sender.id)
         
@@ -1018,17 +1016,17 @@ async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("موجودی شما کافی نیست.")
             return
 
-        # Ensure receiver exists in DB
-        get_user(receiver.id)
+        get_user(receiver.id) # Ensure receiver exists
 
-        # Perform transaction
         db.users.update_one({'user_id': sender.id}, {'$inc': {'balance': -amount}})
         db.users.update_one({'user_id': receiver.id}, {'$inc': {'balance': amount}})
 
-        text = (f"✅ **انتقال موفق** ✅\n\n"
-                f"👤 از: @{sender.username or sender.first_name}\n"
-                f"👥 به: @{receiver.username or receiver.first_name}\n"
-                f"💎 مبلغ: {amount} الماس")
+        text = (
+            f"✅ انتقال موفق ✅\n\n"
+            f"👤 از: @{sender.username or sender.first_name}\n"
+            f"👥 به: @{receiver.username or receiver.first_name}\n"
+            f"💎 مبلغ: {amount} الماس"
+        )
         await update.message.reply_text(text)
 
     except (ValueError, TypeError):
@@ -1039,7 +1037,7 @@ async def transfer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Starts a bet, matching the user's screenshot."""
+    """Starts a bet with inline buttons, styled like the image."""
     proposer = update.effective_user
     
     match = re.search(r'(\d+)', update.message.text)
@@ -1081,6 +1079,7 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"- {proposer_mention}"
     )
             
+    # Reply to the user's message as shown in the screenshot
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
