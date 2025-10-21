@@ -867,9 +867,9 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
 # =======================================================
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    # Use a production server like Gunicorn instead of Flask's development server
-    from waitress import serve
-    serve(web_app, host='0.0.0.0', port=port)
+    # NOTE: Using Flask's built-in server which is not suitable for production.
+    # For production, use a WSGI server like Gunicorn or Waitress.
+    web_app.run(host='0.0.0.0', port=port)
 
 async def post_init(application: Application):
     """Actions to run after the bot is initialized."""
