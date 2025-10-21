@@ -47,6 +47,7 @@ API_ID = int(os.environ.get("API_ID", 28190856))
 API_HASH = os.environ.get("API_HASH", "6b9b5309c2a211b526c6ddad6eabb521")
 MONGO_URI = os.environ.get("MONGO_URI", "mongodb+srv://CFNBEFBGWFB:hdhbedfefbegh@cluster0.obohcl3.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 WEB_APP_URL = os.environ.get("WEB_APP_URL", "http://127.0.0.1:8080")
+BET_TAX_RATE = 0.02 # 2% tax
 
 # --- Database Setup (MongoDB) ---
 db = None
@@ -62,7 +63,6 @@ except Exception as e:
 # --- Global Variables & State Management ---
 LOGIN_SESSIONS = {}
 ACTIVE_SELF_BOTS = {}
-CONVERSATION_STATE = {}
 PYRO_LOOPS = {} # Separate event loops for each pyrogram instance
 BOT_EVENT_LOOP = None # Global event loop for the main bot
 
@@ -322,23 +322,182 @@ async def stop_self_bot_instance(user_id: int):
 web_app = Flask(__name__)
 
 HTML_TEMPLATE = """
-<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>ورود به سلف بات</title><style>@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700&display=swap');body{font-family:'Vazirmatn',sans-serif;background-color:#0d1117;color:#c9d1d9;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;padding:20px;box-sizing:border-box;}.container{background:#161b22;padding:30px 40px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,0.4);text-align:center;width:100%;max-width:480px;border:1px solid #30363d;}h1{color:#58a6ff;margin-bottom:15px;font-size:1.6em;}p{color:#8b949e;line-height:1.6;margin-bottom:25px;}form{display:flex;flex-direction:column;gap:15px;}input[type="text"],input[type="password"]{padding:12px;border:1px solid #30363d;background-color:#0d1117;color:#c9d1d9;border-radius:8px;font-size:16px;text-align:left;direction:ltr;}input::placeholder{color:#484f58;}button{padding:12px;background-color:#238636;color:white;border:none;border-radius:8px;font-size:16px;cursor:pointer;transition:background-color .2s;font-weight:bold;}button:hover{background-color:#2ea043;}.error{color:#f85149;margin-top:15px;font-weight:bold;}.success{color:#3fb950;font-family:monospace;background:#161b22;padding:15px;border-radius:8px;border:1px solid #30363d;text-align:left;direction:ltr;word-break:break-all;margin-top:20px;}.note{font-size:0.9em;color:#8b949e;}</style></head><body><div class="container">
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ورود به سلف بات</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;700&display=swap');
+        
+        :root {
+            --bg-color: #0d1117;
+            --container-bg: #161b22;
+            --border-color: #30363d;
+            --text-color: #c9d1d9;
+            --text-muted: #8b949e;
+            --accent-color: #58a6ff;
+            --success-color: #3fb950;
+            --error-color: #f85149;
+            --btn-bg: #238636;
+            --btn-hover-bg: #2ea043;
+            --input-bg: #010409;
+        }
+
+        body {
+            font-family: 'Vazirmatn', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .container {
+            background: var(--container-bg);
+            padding: 30px 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            text-align: center;
+            width: 100%;
+            max-width: 480px;
+            border: 1px solid var(--border-color);
+            transition: all 0.3s ease;
+        }
+
+        h1 {
+            color: var(--accent-color);
+            margin-bottom: 15px;
+            font-size: 1.8em;
+            font-weight: 700;
+        }
+
+        p {
+            color: var(--text-muted);
+            line-height: 1.7;
+            margin-bottom: 25px;
+        }
+
+        form {
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            padding: 14px;
+            border: 1px solid var(--border-color);
+            background-color: var(--input-bg);
+            color: var(--text-color);
+            border-radius: 8px;
+            font-size: 16px;
+            text-align: left;
+            direction: ltr;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        
+        input:focus {
+            outline: none;
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.3);
+        }
+
+        input::placeholder {
+            color: #484f58;
+        }
+
+        button {
+            padding: 14px;
+            background-color: var(--btn-bg);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background-color .2s, transform .1s;
+            font-weight: bold;
+        }
+
+        button:hover {
+            background-color: var(--btn-hover-bg);
+        }
+        
+        button:active {
+            transform: scale(0.98);
+        }
+
+        .error {
+            color: var(--error-color);
+            background-color: rgba(248, 81, 73, 0.1);
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 15px;
+            font-weight: bold;
+            border: 1px solid var(--error-color);
+        }
+
+        .success {
+            color: var(--success-color);
+            font-family: monospace;
+            background: var(--input-bg);
+            padding: 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            text-align: left;
+            direction: ltr;
+            word-break: break-all;
+            margin-top: 20px;
+            position: relative;
+        }
+        
+        .note {
+            font-size: 0.9em;
+            color: var(--text-muted);
+            margin-top: 15px;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
 {% if step == 'start' %}
-    <h1>دریافت کد تایید</h1><p>یک کد به حساب تلگرام شماره <strong>{{ phone }}</strong> ارسال خواهد شد.</p>{% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <h1>دریافت کد تایید</h1>
+    <p>یک کد به حساب تلگرام شماره <strong>{{ phone }}</strong> ارسال خواهد شد. لطفاً روی دکمه زیر کلیک کنید.</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
     <form action="/submit_phone/{{ token }}" method="post"><button type="submit">ارسال کد</button></form>
 {% elif step == 'awaiting_code' %}
-    <h1>کد تایید</h1><p>کدی که به تلگرام شما ارسال شد را وارد کنید.</p>{% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <form action="/submit_code/{{ token }}" method="post"><input type="text" name="code" placeholder="Code" required><button type="submit">تایید کد</button></form>
+    <h1>کد تایید</h1>
+    <p>کدی که به تلگرام شما ارسال شد را وارد کنید.</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form action="/submit_code/{{ token }}" method="post">
+        <input type="text" name="code" placeholder="Code" required autocomplete="off">
+        <button type="submit">تایید کد</button>
+    </form>
 {% elif step == 'awaiting_password' %}
-    <h1>رمز دو مرحله‌ای</h1><p>رمز تایید دو مرحله‌ای حساب خود را وارد کنید.</p>{% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <form action="/submit_password/{{ token }}" method="post"><input type="password" name="password" placeholder="Password" required><button type="submit">ورود</button></form>
+    <h1>رمز دو مرحله‌ای</h1>
+    <p>رمز تایید دو مرحله‌ای حساب خود را وارد کنید.</p>
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <form action="/submit_password/{{ token }}" method="post">
+        <input type="password" name="password" placeholder="Password" required>
+        <button type="submit">ورود</button>
+    </form>
 {% elif step == 'done' %}
-    <h1>✅ موفقیت آمیز بود</h1><p>این کد Session String شماست. آن را کپی کرده و برای ربات در تلگرام ارسال کنید.</p>
-    <div class="success">{{ session_string }}</div><p class="note">این صفحه را ببندید. این کد را با هیچکس به اشتراک نگذارید.</p>
+    <h1>✅ ورود موفق</h1>
+    <p>این کد Session String شماست. آن را کپی کرده و برای ربات در تلگرام ارسال کنید.</p>
+    <div class="success" id="session-string">{{ session_string }}</div>
+    <p class="note">این صفحه را ببندید و این کد را با هیچکس به اشتراک نگذارید.</p>
 {% else %}
-    <h1>خطا</h1><p class="error">{{ error or 'توکن نامعتبر یا منقضی شده است. لطفا دوباره از ربات لینک بگیرید.' }}</p>
+    <h1>خطا</h1>
+    <p class="error">{{ error or 'توکن نامعتبر یا منقضی شده است. لطفا دوباره از ربات لینک بگیرید.' }}</p>
 {% endif %}
-</div></body></html>
+</div>
+</body>
+</html>
 """
 
 async def _web_send_code(token):
@@ -351,11 +510,15 @@ async def _web_send_code(token):
         session_data['phone_code_hash'] = sent_code.phone_code_hash
         session_data['client'] = client
         session_data['step'] = 'awaiting_code'
+    except FloodWait as e:
+        logging.error(f"Web login FloodWait for token {token}: {e}")
+        session_data['error'] = f"تلگرام شما را موقتا محدود کرده است. لطفا بعد از {e.value} ثانیه دوباره تلاش کنید."
     except Exception as e:
         logging.error(f"Web login error (send_code) for token {token}: {e}")
-        session_data['error'] = str(e)
+        session_data['error'] = "خطا در ارسال کد. شماره تلفن ممکن است اشتباه باشد."
         if 'client' in session_data: await session_data['client'].disconnect()
         LOGIN_SESSIONS.pop(token, None)
+
 
 @web_app.route('/')
 def health_check():
@@ -375,7 +538,11 @@ def submit_phone(token):
         return render_template_string(HTML_TEMPLATE, step='error')
     
     future = asyncio.run_coroutine_threadsafe(_web_send_code(token), BOT_EVENT_LOOP)
-    future.result(timeout=60)
+    try:
+        future.result(timeout=60)
+    except Exception as e:
+        logging.error(f"Error in submit_phone task: {e}")
+        LOGIN_SESSIONS[token]['error'] = "زمان انتظار برای ارسال کد به پایان رسید."
     
     return render_template_string(HTML_TEMPLATE, **LOGIN_SESSIONS.get(token, {'step':'error'}))
 
@@ -389,31 +556,41 @@ def submit_code(token):
     client = session_data['client']
     
     try:
-        await_task = asyncio.run_coroutine_threadsafe(
-            client.sign_in(session_data['phone'], session_data['phone_code_hash'], code),
-            BOT_EVENT_LOOP
-        )
-        await_task.result(timeout=60)
-        
-        ss_task = asyncio.run_coroutine_threadsafe(client.export_session_string(), BOT_EVENT_LOOP)
-        session_data['session_string'] = ss_task.result(timeout=30)
-        session_data['step'] = 'done'
-        
-        asyncio.run_coroutine_threadsafe(client.disconnect(), BOT_EVENT_LOOP)
+        # Create a coroutine to run in the bot's event loop
+        async def do_sign_in():
+            try:
+                await client.sign_in(session_data['phone'], session_data['phone_code_hash'], code.strip())
+                session_string = await client.export_session_string()
+                
+                # Update session data for rendering
+                session_data['session_string'] = session_string
+                session_data['step'] = 'done'
+            except SessionPasswordNeeded:
+                session_data['step'] = 'awaiting_password'
+            except (PhoneCodeInvalid, PhoneCodeExpired):
+                session_data['error'] = 'کد وارد شده اشتباه یا منقضی شده است.'
+                session_data['step'] = 'awaiting_code'
+            except Exception as e:
+                logging.error(f"Web login error (submit_code) for token {token}: {e}")
+                session_data['step'] = 'error'
+                session_data['error'] = "خطایی رخ داد. لطفا دوباره تلاش کنید."
+            finally:
+                if session_data['step'] == 'done' or session_data['step'] == 'error':
+                    await client.disconnect()
+                    if session_data['step'] == 'error':
+                        LOGIN_SESSIONS.pop(token, None)
 
-    except SessionPasswordNeeded:
-        session_data['step'] = 'awaiting_password'
-    except (PhoneCodeInvalid, PhoneCodeExpired):
-        session_data['error'] = 'کد وارد شده اشتباه یا منقضی شده است.'
-        session_data['step'] = 'awaiting_code'
+        # Run the coroutine and wait for it to complete
+        future = asyncio.run_coroutine_threadsafe(do_sign_in(), BOT_EVENT_LOOP)
+        future.result(timeout=60)
+
     except Exception as e:
-        logging.error(f"Web login error (submit_code) for token {token}: {e}")
+        logging.error(f"General error in submit_code for token {token}: {e}")
         session_data['step'] = 'error'
-        session_data['error'] = "خطایی رخ داد. لطفا دوباره تلاش کنید."
-        asyncio.run_coroutine_threadsafe(client.disconnect(), BOT_EVENT_LOOP)
-        LOGIN_SESSIONS.pop(token, None)
+        session_data['error'] = "یک خطای ناشناخته رخ داد."
 
     return render_template_string(HTML_TEMPLATE, **session_data)
+
 
 @web_app.route('/submit_password/<token>', methods=['POST'])
 def submit_password(token):
@@ -425,24 +602,33 @@ def submit_password(token):
     client = session_data['client']
 
     try:
-        pwd_task = asyncio.run_coroutine_threadsafe(client.check_password(password), BOT_EVENT_LOOP)
-        pwd_task.result(timeout=60)
+        async def do_check_password():
+            try:
+                await client.check_password(password)
+                session_string = await client.export_session_string()
+                session_data['session_string'] = session_string
+                session_data['step'] = 'done'
+            except PasswordHashInvalid:
+                session_data['error'] = 'رمز عبور اشتباه است.'
+                session_data['step'] = 'awaiting_password'
+            except Exception as e:
+                logging.error(f"Web login error (submit_password) for token {token}: {e}")
+                session_data['step'] = 'error'
+                session_data['error'] = "خطایی در تایید رمز رخ داد."
+            finally:
+                if session_data['step'] == 'done' or session_data['step'] == 'error':
+                    await client.disconnect()
+                    if session_data['step'] == 'error':
+                        LOGIN_SESSIONS.pop(token, None)
 
-        ss_task = asyncio.run_coroutine_threadsafe(client.export_session_string(), BOT_EVENT_LOOP)
-        session_data['session_string'] = ss_task.result(timeout=30)
-        session_data['step'] = 'done'
-        asyncio.run_coroutine_threadsafe(client.disconnect(), BOT_EVENT_LOOP)
-
-    except PasswordHashInvalid:
-        session_data['error'] = 'رمز عبور اشتباه است.'
-        session_data['step'] = 'awaiting_password'
+        future = asyncio.run_coroutine_threadsafe(do_check_password(), BOT_EVENT_LOOP)
+        future.result(timeout=60)
+        
     except Exception as e:
-        logging.error(f"Web login error (submit_password) for token {token}: {e}")
+        logging.error(f"General error in submit_password for token {token}: {e}")
         session_data['step'] = 'error'
-        session_data['error'] = "خطایی رخ داد. لطفا دوباره تلاش کنید."
-        asyncio.run_coroutine_threadsafe(client.disconnect(), BOT_EVENT_LOOP)
-        LOGIN_SESSIONS.pop(token, None)
-    
+        session_data['error'] = "یک خطای ناشناخته در پردازش رمز عبور رخ داد."
+
     return render_template_string(HTML_TEMPLATE, **session_data)
 
 # =======================================================
@@ -703,7 +889,8 @@ async def admin_panel_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_admin_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     choice = update.message.text
-    CONVERSATION_STATE[update.effective_user.id] = choice
+    # FIX: Using context.user_data for conversation state
+    context.user_data['admin_choice'] = choice
     
     prompts = {
         "💎 تنظیم قیمت الماس": "قیمت جدید هر الماس به تومان را وارد کنید:",
@@ -738,7 +925,8 @@ async def process_admin_choice(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def process_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    last_choice = CONVERSATION_STATE.get(user_id)
+    # FIX: Reading from context.user_data
+    last_choice = context.user_data.get('admin_choice')
     reply = update.message.text
     admin_doc = get_user(user_id)
 
@@ -753,8 +941,8 @@ async def process_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
             set_setting('referral_reward', int(reply))
         elif last_choice == "💳 تنظیم شماره کارت":
             parts = reply.split('\n')
-            set_setting('card_number', parts[0])
-            set_setting('card_holder', parts[1] if len(parts) > 1 else "")
+            set_setting('card_number', parts[0].strip())
+            set_setting('card_holder', parts[1].strip() if len(parts) > 1 else "")
         elif last_choice == "📢 تنظیم کانال اجباری":
             set_setting('forced_channel_id', int(reply))
         elif last_choice == "➕ افزودن ادمین":
@@ -769,10 +957,15 @@ async def process_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE
                 db.users.update_one({'user_id': int(reply)}, {'$set': {'is_admin': False}})
 
         await update.message.reply_text("✅ تنظیمات با موفقیت ذخیره شد.", reply_markup=admin_keyboard)
+    except (ValueError, IndexError, TypeError) as e:
+        logging.error(f"Admin reply error for choice '{last_choice}': {e}")
+        await update.message.reply_text(f"❌ ورودی نامعتبر است. لطفا دوباره تلاش کنید.", reply_markup=admin_keyboard)
     except Exception as e:
-        await update.message.reply_text(f"❌ خطایی رخ داد: {e}\nلطفا ورودی خود را بررسی کنید.", reply_markup=admin_keyboard)
+        logging.error(f"Unexpected admin reply error: {e}")
+        await update.message.reply_text(f"❌ خطایی ناشناخته رخ داد.", reply_markup=admin_keyboard)
 
-    CONVERSATION_STATE.pop(user_id, None)
+    # FIX: Clearing from context.user_data
+    context.user_data.pop('admin_choice', None)
     return ADMIN_MENU
 
 async def admin_support_reply_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -943,7 +1136,7 @@ async def callback_query_handler(update: Update, context: ContextTypes.DEFAULT_T
                 
             amount = bet['amount']
             total_pot = amount * 2
-            tax = round(total_pot * 0.02) # 2% tax
+            tax = round(total_pot * BET_TAX_RATE) 
             prize = total_pot - tax
             
             winner_username = ""
@@ -1054,11 +1247,6 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("موجودی شما برای این شرط کافی نیست.")
         return
 
-    # 
-    # FIX: Changed `update.chat.id` to `update.effective_chat.id`
-    # The error `AttributeError: 'Update' object has no attribute 'chat'` happens here.
-    # `effective_chat` is the correct way to get chat info from an update.
-    # 
     bet = db.bets.insert_one({
         'proposer_id': proposer.id,
         'proposer_username': proposer.username or proposer.first_name,
@@ -1092,7 +1280,6 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_doc = get_user(update.effective_user.id)
     await update.message.reply_text("عملیات لغو شد.", reply_markup=get_main_keyboard(user_doc))
     context.user_data.clear()
-    CONVERSATION_STATE.pop(update.effective_user.id, None)
     return ConversationHandler.END
 
 # =======================================================
@@ -1100,8 +1287,7 @@ async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE
 # =======================================================
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    # NOTE: Using Flask's built-in server which is not suitable for production.
-    # For production, use a WSGI server like Gunicorn or Waitress.
+    # For production, use a proper WSGI server like Gunicorn or Waitress.
     web_app.run(host='0.0.0.0', port=port)
 
 async def post_init(application: Application):
@@ -1160,7 +1346,7 @@ if __name__ == "__main__":
             AWAIT_SESSION: [MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, process_session_string)],
         },
         fallbacks=[CommandHandler('cancel', cancel_conversation)],
-        conversation_timeout=300  # 5 minute timeout
+        conversation_timeout=300
     )
     admin_reply_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(admin_support_reply_entry, pattern="^reply_support_")],
@@ -1197,3 +1383,4 @@ if __name__ == "__main__":
 
     logging.info("Starting Telegram Bot...")
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
