@@ -41,7 +41,7 @@ logging.getLogger("pyrogram").setLevel(logging.WARNING)
 
 
 # --- Environment Variables & Constants ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8201277186:AAEUNypEGr_D3NuBsJ4RnexFv0u5ABrd5RM")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8233582209:AAHKPQX-349tAfBOCFWbRRqcpD-QbVrDzQ0")
 OWNER_ID = int(os.environ.get("OWNER_ID", 7423552124))
 API_ID = int(os.environ.get("API_ID", 28190856))
 API_HASH = os.environ.get("API_HASH", "6b9b5309c2a211b526c6ddad6eabb521")
@@ -1071,15 +1071,15 @@ async def start_bet_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ])
     
-    proposer_mention = f"@{proposer.username}" if proposer.username else proposer.mention_html()
+    proposer_mention = f"@{proposer.username or proposer.first_name}"
+    
     text = (
-        f"🎲 شرط‌بندی جدید به مبلغ **{amount}** الماس توسط {proposer_mention} شروع شد!\n\n"
-        "نفر دوم که به شرط بپیوندد، برنده مشخص خواهد شد.\n\n"
-        "**شرکت کنندگان:**\n"
+        f"🎲 شرط‌بندی جدید به مبلغ {amount} الماس توسط {proposer_mention} شروع شد!\n\n"
+        f"نفر دوم که به شرط بپیوندد، برنده مشخص خواهد شد.\n\n"
+        f"شرکت کنندگان:\n"
         f"- {proposer_mention}"
     )
             
-    # Reply to the user's message as shown in the screenshot
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
@@ -1130,7 +1130,8 @@ if __name__ == "__main__":
             ADMIN_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_choice)],
             AWAIT_ADMIN_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_reply)]
         },
-        fallbacks=[CommandHandler('cancel', cancel_conversation), MessageHandler(filters.Regex("^⬅️ بازگشت به منوی اصلی$"), cancel_conversation)]
+        fallbacks=[CommandHandler('cancel', cancel_conversation), MessageHandler(filters.Regex("^⬅️ بازگشت به منوی اصلی$"), cancel_conversation)],
+        conversation_timeout=300
     )
     deposit_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💰 افزایش موجودی$"), deposit_entry)],
@@ -1138,12 +1139,14 @@ if __name__ == "__main__":
             AWAIT_DEPOSIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_deposit_amount)],
             AWAIT_DEPOSIT_RECEIPT: [MessageHandler(filters.PHOTO, process_deposit_receipt)]
         },
-        fallbacks=[CommandHandler('cancel', cancel_conversation)]
+        fallbacks=[CommandHandler('cancel', cancel_conversation)],
+        conversation_timeout=300
     )
     support_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^💬 پشتیبانی$"), support_entry)],
         states={ AWAIT_SUPPORT_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_support_message)] },
-        fallbacks=[CommandHandler('cancel', cancel_conversation)]
+        fallbacks=[CommandHandler('cancel', cancel_conversation)],
+        conversation_timeout=300
     )
     self_bot_conv = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^🚀 dark self$") & filters.ChatType.PRIVATE, self_bot_entry)],
@@ -1160,7 +1163,8 @@ if __name__ == "__main__":
             AWAIT_ADMIN_SUPPORT_REPLY: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_support_reply)]
         },
         fallbacks=[CommandHandler('cancel', cancel_conversation)],
-        per_message=False
+        per_message=False,
+        conversation_timeout=300
     )
 
     application = (
